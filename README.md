@@ -19,8 +19,15 @@ ccenv 用来回答一个很具体的问题：这台 Mac 的网络出口、系统
 
 ## 命令行
 
+npm 包名是 `@kadaliao/ccenv`，装好后命令叫 `ccenv`。npm 上不带 scope 的 `ccenv` 是另一个不相关的项目，别装错。
+
 ```bash
-npm install -g ccenv        # 或者 clone 下来 npm link
+npm install -g @kadaliao/ccenv                                     # 全局安装
+npx @kadaliao/ccenv                                                # 不安装，临时跑一次
+git clone https://github.com/kadaliao/ccenv && cd ccenv && npm link   # 从源码装
+```
+
+```bash
 ccenv                        # 完整检测，约 4 秒
 ccenv --explain              # 每个冲突项附带影响说明和处理建议
 ccenv --json                 # 结构化输出（schema 2）
