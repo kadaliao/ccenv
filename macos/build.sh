@@ -14,7 +14,14 @@ DIST=dist
 APP="$DIST/ccenv.app"
 
 echo "▸ swift build (release)"
-swift build -c release --product CCEnv 2>&1 | grep -E 'error|Build complete' || { echo "构建失败" >&2; exit 1; }
+BUILD_LOG="$DIST/swift-build.log"
+mkdir -p "$DIST"
+if ! swift build -c release --product CCEnv > "$BUILD_LOG" 2>&1; then
+  echo "构建失败，swift build 输出末尾：" >&2
+  tail -40 "$BUILD_LOG" >&2
+  exit 1
+fi
+grep -E 'error|Build complete' "$BUILD_LOG" || true
 BIN=$(swift build -c release --product CCEnv --show-bin-path)/CCEnv
 
 echo "▸ 组装 bundle"
