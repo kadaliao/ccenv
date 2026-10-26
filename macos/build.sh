@@ -45,7 +45,7 @@ if [ "$IDENTITY" = "-" ]; then
   echo "▸ 签名（ad-hoc）"
   codesign --force --deep --sign - --identifier com.kadaliao.ccenv "$APP" 2>&1 | grep -v 'replacing existing signature' || true
 else
-  echo "▸ 签名（$IDENTITY）"
+  echo "▸ 签名（${IDENTITY}）"
   codesign --force --deep --sign "$IDENTITY" --identifier com.kadaliao.ccenv --options runtime --timestamp "$APP"
 fi
 codesign --verify --deep --strict "$APP"
