@@ -1,7 +1,10 @@
 #!/bin/bash
 # 把 Swift Package 打成可双击的 ccenv.app（ad-hoc 签名，免 Xcode 工程）。
-# 用法: macos/build.sh                 → macos/dist/ccenv.app
+# 用法: macos/build.sh                 → macos/dist/ccenv.app（ad-hoc 签名）
 #       macos/build.sh --dmg --zip     → 另外产出 dist/ccenv-<ver>.dmg 和 dist/ccenv-<ver>-macos.zip
+# 正式签名 + 公证（需要 Developer ID Application 证书）：
+#       CCENV_SIGN_IDENTITY="Developer ID Application: <Name> (<TEAMID>)" \
+#       CCENV_NOTARY_PROFILE=ccenv-notary macos/build.sh --dmg
 set -euo pipefail
 cd "$(dirname "$0")"
 
@@ -29,8 +32,15 @@ swiftc -O -o "$DIST/make-icon" Support/MakeIcon.swift 2>/dev/null
 iconutil -c icns "$ICONSET" -o "$APP/Contents/Resources/AppIcon.icns"
 rm -rf "$ICONSET" "$DIST/make-icon"
 
-echo "▸ 签名（ad-hoc）"
-codesign --force --deep --sign - --identifier com.kadaliao.ccenv "$APP" 2>&1 | grep -v 'replacing existing signature' || true
+# 签名：默认 ad-hoc；设置 CCENV_SIGN_IDENTITY="Developer ID Application: Name (TEAMID)" 则正式签名（开启 hardened runtime，公证必需）
+IDENTITY="${CCENV_SIGN_IDENTITY:--}"
+if [ "$IDENTITY" = "-" ]; then
+  echo "▸ 签名（ad-hoc）"
+  codesign --force --deep --sign - --identifier com.kadaliao.ccenv "$APP" 2>&1 | grep -v 'replacing existing signature' || true
+else
+  echo "▸ 签名（$IDENTITY）"
+  codesign --force --deep --sign "$IDENTITY" --identifier com.kadaliao.ccenv --options runtime --timestamp "$APP"
+fi
 codesign --verify --deep --strict "$APP"
 
 for arg in "$@"; do
@@ -50,6 +60,17 @@ for arg in "$@"; do
       ln -s /Applications "$STAGE/Applications"
       hdiutil create -quiet -volname "ccenv $VERSION" -srcfolder "$STAGE" -ov -format UDZO "$DIST/ccenv-$VERSION.dmg"
       rm -rf "$STAGE"
+      if [ "$IDENTITY" != "-" ]; then
+        codesign --force --sign "$IDENTITY" --timestamp "$DIST/ccenv-$VERSION.dmg"
+      fi
+      # 公证：设置 CCENV_NOTARY_PROFILE=<notarytool store-credentials 存的名字> 则提交 Apple 公证并 staple
+      if [ -n "${CCENV_NOTARY_PROFILE:-}" ]; then
+        [ "$IDENTITY" != "-" ] || { echo "公证需要 Developer ID 签名，请同时设置 CCENV_SIGN_IDENTITY" >&2; exit 1; }
+        echo "▸ 公证（notarytool，通常 1~5 分钟）"
+        xcrun notarytool submit "$DIST/ccenv-$VERSION.dmg" --keychain-profile "$CCENV_NOTARY_PROFILE" --wait
+        xcrun stapler staple "$DIST/ccenv-$VERSION.dmg"
+        spctl -a -vv -t open --context context:primary-signature "$DIST/ccenv-$VERSION.dmg" 2>&1 | tail -2
+      fi
       echo "   $DIST/ccenv-$VERSION.dmg"
       ;;
   esac

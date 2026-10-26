@@ -72,6 +72,13 @@ open macos/dist/ccenv.app
 
 本地构建的 app 没有 quarantine 标记，直接就能打开。推 `v*` 标签会触发 GitHub Actions 自动构建并把 dmg / zip 挂到 Release。
 
+有 Developer ID Application 证书的话可以正式签名并公证，用户下载后就不会被 Gatekeeper 拦：
+
+```bash
+xcrun notarytool store-credentials ccenv-notary --apple-id <Apple ID> --team-id <TEAMID>   # 一次性，密码用 App 专用密码
+CCENV_SIGN_IDENTITY="Developer ID Application: <Name> (<TEAMID>)" CCENV_NOTARY_PROFILE=ccenv-notary macos/build.sh --dmg
+```
+
 ### 两套实现怎么保持一致
 
 `macos/Sources/CCEnvCore` 是 `src/` 的 Swift 移植，文件一一对应（`SystemFacts.swift` ↔ `system.js`，`Rules.swift` ↔ `rules.js`，以此类推），规则 ID、阈值、文案、JSON schema 都相同。改规则时两边一起改，然后跑对拍：
