@@ -1,53 +1,105 @@
 # ccenv
 
-ccenv 是一个零依赖的 Node CLI，目前只支持 macOS 环境。它需要 Node 20 以上版本，底层依赖 scutil、defaults、sysctl 等系统原生命令。
+ccenv 用来回答一个很具体的问题：这台 Mac 的网络出口、系统时区、区域语言、字体、DNS、时钟和进程架构这几层画像之间，有没有互相矛盾的地方。它只做事实核对，输出一份带具体证据的冲突清单，不打综合风险分，也不判断环境「像哪个国家」。所有比对都在本地完成，不读取任何账号信息，网络层只向几个公开的 IP 回显 / GeoIP 接口发请求。
 
-这个工具用来采集本机的网络出口、系统时区、区域语言、字体、DNS 和进程架构信息，对比找出这些层面之间互相矛盾的地方，最后输出一份带有具体证据的冲突清单。它只做事实核对，不打综合风险分，也不会判断环境到底像哪个国家。工具不读取任何账号信息，所有比对都在本地跑完，不联网上传数据。
+有两种形态，共用同一套规则：
 
-写这堆代码最初是为了搞清楚 [yacuo/check-cc](https://github.com/yacuo/check-cc) 的底层逻辑，后来发现里面有些计分方式会导致同一份证据被重复计算。在这里一条规则只对应一个底层事实。比如系统偏好如果设成了中文，原项目会将其拆成语言、变体等四项各自给分，ccenv 砍掉了这种加权求和，直接找冲突点。字体的处理也做了调整，每台 Mac 都有出厂自带的中文字体，这跟使用者当前在哪个国家无关，所以系统预装的那批字体永远不计入风险。DNS 解析路径也做了严格区分，避免把内网下发的特定域名 split DNS 误报成默认解析器泄漏。
+- **命令行**：零依赖的 Node CLI，Node 20 以上即可，适合脚本和 CI。
+- **macOS 应用**：原生 SwiftUI 写的 `ccenv.app`，不需要装 Node，打开就跑，适合日常随手查。
 
-你可以全局 npm link 然后直接用 ccenv 命令，或者用 node 执行入口文件。
+## 为什么重写
+
+最初是为了搞清楚 [yacuo/check-cc](https://github.com/yacuo/check-cc) 的底层逻辑，后来发现它的计分方式会让同一份证据被重复计算。这里换了一种思路：一条规则只对应一个底层事实，规则只给离散等级，结论取最高等级，不做加权求和。几个具体差异：
+
+- 系统语言设成中文，原项目会拆成语言、变体等四项各自给分；这里只问「语言/区域和出口国家对不对得上」。
+- 每台 Mac 出厂都带 PingFang、Hiragino、STHeiti 这批中文字体，跟使用者在哪无关，所以预装字体永远不计入风险，只看 MiSans、HarmonyOS Sans 这类整机厂商定制字体。
+- DNS 严格区分默认解析路径和按域名 / 按接口限定的解析器，公司内网下发的 split DNS 不会被当成泄漏。
+- macOS 自带的 utun0~utun3 只有链路本地地址，不算 VPN / 代理隧道；只有拿到了实际地址的隧道接口才算在用。
+- 出口 IP 的 v4 和 v6 观测分开统计。双栈机器上 Cloudflare、ipinfo 这类回显会优先回 v6，混进 v4 池会被误判成「跨网段漂移」。
+
+## 命令行
 
 ```bash
-node bin/ccenv.js                 # 完整检测，约 7 秒
-node bin/ccenv.js --explain       # 冲突项附带影响和处理说明
-node bin/ccenv.js --json          # 结构化输出
-node bin/ccenv.js --offline       # 不联网，只查本地层
-node bin/ccenv.js --samples 12    # 出口 IP 采样次数，默认 6
-node bin/ccenv.js --timeout 5000  # 单次网络超时
-node bin/ccenv.js --exit-code     # 有 high 级冲突时退出码 1
-node bin/ccenv.js -h              # 帮助；-v 查看版本
+npm install -g ccenv        # 或者 clone 下来 npm link
+ccenv                        # 完整检测，约 4 秒
+ccenv --explain              # 每个冲突项附带影响说明和处理建议
+ccenv --json                 # 结构化输出（schema 2）
+ccenv --offline              # 不联网，只查本地层
+ccenv --samples 12           # 出口 IP 采样次数，默认 6
+ccenv --timeout 5000         # 单次网络超时，默认 8000 ms
+ccenv --exit-code            # 有 high 级冲突时退出码 1，给 CI 用
+ccenv -h                     # 帮助；-v 查看版本
 ```
 
-跑完的输出结构大概如下。冲突等级分 high、medium、low、info、ok 五档，整体结论直接取最高那一档。因为离线或者情报源报错没跑成的规则会单列为跳过项，不当成通过。
+输出分三块：结论、事实面板、规则清单。
 
 ```text
-出口 IP    198.51.100.24 / 198.51.100.25  (6 次采样)
-归属       美国 · Washington · Seattle  (US)
-ASN        AS64500 Example Hosting, Inc.
-rDNS       mail4.example.com
-类型       机房/托管/代理段  置信 high
-出口时区   America/Los_Angeles (UTC-07:00)
-[HIGH  ] egress-timezone — 出口与系统时区相差超过 5 小时
-[MEDIUM] ip-stability — 同一出口池在 2 个 IP 之间轮询
+结论  严重冲突   最高等级 high
+
+出口层（真实 IP / ASN）
+  出口 IP            198.51.100.24 / 198.51.100.25  (6 次采样)
+  归属               美国 · Washington · Seattle  (US)
+  ASN                AS64500 Example Hosting, Inc.
+  类型               机房/托管/代理段  置信 high
+  出口时区           America/Los_Angeles (UTC-07:00)
+
+系统层
+  时区               Asia/Singapore (UTC+08:00) ← 与出口不一致
+  链路               经代理 apps=[mihomo] tun=[utun5(198.18.0.1)]
+  DNS                127.0.0.1 (默认走代理)
+
+一致性冲突（3）
+  [HIGH  ] egress-timezone — 出口与系统时区相差超过 5 小时
+  [MEDIUM] ip-stability — 同一出口池在 2 个 IP 之间轮询
+  [LOW   ] locale-layer — 语言标签不一致：zh / en
 ```
 
-目前的 11 条检测规则分了两组。
+冲突等级分 high、medium、low、info、ok 五档。离线或情报源失败导致没跑成的规则会单列为跳过项，不算通过。
 
-| 分组 | 规则 ID | 说明 |
+## macOS 应用
+
+界面是一个窗口：顶部是结论横幅，中间两张卡片分别是出口层和系统层的事实，下面是按等级排好的冲突清单，点开任意一条能看证据、影响和处理建议。工具栏可以重新检测（⌘R）、复制文本报告 / JSON、导出 JSON 文件，选项里能切换离线模式、采样次数和超时。深色模式自动适配。
+
+构建需要 Xcode 15 以上（Swift 5.9+），不需要 Xcode 工程：
+
+```bash
+npm run app                  # 等价于 macos/build.sh，产出 macos/dist/ccenv.app
+macos/build.sh --zip         # 另外打一个 macos/dist/ccenv-macos.zip
+open macos/dist/ccenv.app
+```
+
+应用是 ad-hoc 签名的，第一次打开如果被 Gatekeeper 拦下，右键选「打开」即可；或者 `xattr -d com.apple.quarantine ccenv.app`。最低支持 macOS 14。
+
+### 两套实现怎么保持一致
+
+`macos/Sources/CCEnvCore` 是 `src/` 的 Swift 移植，文件一一对应（`SystemFacts.swift` ↔ `system.js`，`Rules.swift` ↔ `rules.js`，以此类推），规则 ID、阈值、文案、JSON schema 都相同。改规则时两边一起改，然后跑对拍：
+
+```bash
+npm run parity               # 同一台机器上跑 Node 和 Swift，逐条比较规则等级
+npm run parity -- --offline  # 只比本地层
+npm test                     # Node 单元测试
+cd macos && swift test       # Swift 单元测试
+```
+
+## 规则
+
+| 分组 | 规则 ID | 看什么 |
 | --- | --- | --- |
-| consistency | egress-timezone | 出口 IP 的归属时区和当前机器的系统时区差了几个小时。 |
-| consistency | egress-locale | 出口所在国家和系统的区域语言设置对应不上。 |
-| consistency | ip-stability | 采样窗口内出口 IP 发生了漂移，这里会使用多个回显服务做交叉验证。 |
-| consistency | ip-intel-consistency | 几个独立的 GeoIP 源对同一个 IP 的国家或 ASN 结论有分歧。 |
-| consistency | tz-layer | TZ 环境变量、/etc/localtime 和 Intl 这三层时区数据不自洽。 |
-| consistency | locale-layer | 系统首选语言、AppleLocale 和 Shell LANG 这三层语言设定存在冲突。 |
-| consistency | ipv6 | IPv6 出口和 IPv4 出口落在了不同的国家。 |
-| consistency | dns-path | 系统默认 DNS 解析路径被代理程序接管了。 |
-| consistency | runtime-arch | Node 进程架构与机器实际架构不同，或者正在通过 Rosetta 运行。 |
-| profile | ip-kind | 出口属于机房、托管或代理段，命中依据会原样打印出来。 |
-| profile | vendor-fonts | 本机安装了整机厂商定制的特定字体。 |
+| consistency | egress-timezone | 出口 IP 的归属时区和系统时区差了几个小时。1 小时内 low，1~5 小时 medium，超过 5 小时 high。 |
+| consistency | egress-locale | 出口国家和系统区域 / 语言对不对得上。语言在出口国也常用只算 low。 |
+| consistency | ip-stability | 采样窗口内出口 IP 有没有漂移。同 /24 轮询 medium，跨网段 high。 |
+| consistency | ip-intel-consistency | 几个独立 GeoIP 源对同一个 IP 的国家或 ASN 有没有分歧。 |
+| consistency | clock-skew | 本机时钟和服务器时间戳的偏差。1.5 秒内算一致，超过 5 分钟 high。 |
+| consistency | tz-layer | TZ 环境变量、/etc/localtime 和系统解析出的时区三层是否自洽。 |
+| consistency | locale-layer | 系统首选语言、AppleLocale 和 Shell LANG 三层是否自洽。 |
+| consistency | ipv6 | IPv6 出口和 IPv4 出口是否落在同一个国家。 |
+| consistency | dns-path | 默认 DNS 解析路径有没有被代理接管。 |
+| consistency | runtime-arch | 进程架构和机器架构是否一致，是否在 Rosetta 下运行。 |
+| profile | ip-kind | 出口属于机房 / 托管 / 代理段还是运营商段，命中依据会原样打印。 |
+| profile | vendor-fonts | 本机有没有整机厂商定制字体。 |
 
-有一些已知的情况需要提前说明。`ip-kind` 的判断完全是启发式的，因为免费接口不返回数据中心标记，这里只能靠已知托管 ASN 名单、组织名关键字以及 rDNS 的形态来推测方向。检测出来的矛盾也不等于真的有风险。跨国办公或者使用了公司共享出口，甚至系统设为中文但人确实在国外，都会合理触发时区或区域规则。另外代码目前只在 macOS 上跑过，Linux 的降级分支没做过测试。网络层连的也全是 ipify、Cloudflare trace、ipwho.is、ipinfo.io 和 ipapi.is 这几个公开接口。
+## 已知限制
 
-本项目代码全部重写，未包含原项目源码。GitHub 仓库在 kadaliao/ccenv，采用 MIT 许可。
+`ip-kind` 完全是启发式的。免费接口大多不返回数据中心标记，只能靠已知托管 ASN 名单、组织名关键字和 rDNS 形态推测，有标记时才会直接采信。检测出来的矛盾也不等于真有风险：跨国办公、公司共享出口、系统设中文但人确实在国外，都会合理触发时区或区域规则。代码只在 macOS 上跑过，CLI 在 Linux 上的降级分支没测过。网络层连的是 ipify、Cloudflare trace、ipwho.is、ipinfo.io 和 ipapi.is 这几个公开接口。
+
+本项目代码全部重写，未包含原项目源码。GitHub 仓库在 kadaliao/ccenv，MIT 许可。
