@@ -24,6 +24,8 @@ struct CCEnvApp: App {
                     .keyboardShortcut("r", modifiers: .command)
                     .disabled(model.isRunning)
                 Divider()
+                Button("分享图片…") { model.presentShareImage() }
+                    .disabled(model.report == nil)
                 Button("复制文本报告") { model.copyText() }
                     .keyboardShortcut("c", modifiers: [.command, .shift])
                     .disabled(model.report == nil)

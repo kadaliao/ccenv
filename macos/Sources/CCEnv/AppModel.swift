@@ -18,6 +18,8 @@ final class AppModel {
     var lastRun: Date?
     var expanded: Set<String> = []
     var toast: String?
+    /// 非空时弹出分享图片预览。
+    var shareImage: ShareImage?
 
     // 偏好：手动落到 UserDefaults（@Observable 和 @AppStorage 不能直接混用）
     var offline: Bool { didSet { UserDefaults.standard.set(offline, forKey: "offline") } }
@@ -106,6 +108,49 @@ final class AppModel {
                 self?.flash("已导出到 \(url.lastPathComponent)")
             } catch {
                 self?.flash("导出失败：\(error.localizedDescription)")
+            }
+        }
+    }
+
+    // MARK: 分享图片
+
+    private func renderShareImage() -> ShareImage? {
+        guard let report else { return nil }
+        if let img = ShareImage.render(report) { return img }
+        flash("生成图片失败")
+        return nil
+    }
+
+    func presentShareImage() {
+        shareImage = renderShareImage()
+    }
+
+    func copyImage() {
+        guard let img = renderShareImage() else { return }
+        copyShareImage(img)
+    }
+
+    func copyShareImage(_ img: ShareImage) {
+        let item = NSPasteboardItem()
+        item.setData(img.png, forType: .png)
+        if let tiff = img.image.tiffRepresentation { item.setData(tiff, forType: .tiff) } // 有些应用只认 TIFF
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.writeObjects([item])
+        flash("已复制图片，可直接粘贴")
+    }
+
+    func saveShareImage(_ img: ShareImage) {
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.png]
+        panel.canCreateDirectories = true
+        panel.nameFieldStringValue = img.fileName
+        panel.begin { [weak self] resp in
+            guard resp == .OK, let url = panel.url else { return }
+            do {
+                try img.png.write(to: url, options: .atomic)
+                self?.flash("已存储到 \(url.lastPathComponent)")
+            } catch {
+                self?.flash("存储失败：\(error.localizedDescription)")
             }
         }
     }

@@ -35,6 +35,9 @@ struct ContentView: View {
             }
         }
         .toolbar { toolbar }
+        .sheet(item: Binding(get: { model.shareImage }, set: { model.shareImage = $0 })) { img in
+            SharePreviewSheet(share: img).environment(model)
+        }
     }
 
     @ToolbarContentBuilder
@@ -50,6 +53,9 @@ struct ContentView: View {
             .disabled(model.isRunning)
 
             Menu {
+                Button("分享图片…", systemImage: "photo") { model.presentShareImage() }
+                Button("复制图片", systemImage: "photo.on.rectangle") { model.copyImage() }
+                Divider()
                 Button("复制文本报告", systemImage: "doc.on.doc") { model.copyText() }
                 Button("复制 JSON", systemImage: "curlybraces") { model.copyJSON() }
                 Divider()
@@ -438,5 +444,49 @@ struct RuleRow: View {
         .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(rule.level <= .medium ? rule.level.color.opacity(0.35) : Color.clear, lineWidth: 1))
         .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(.quaternary, lineWidth: 1))
+    }
+}
+
+// MARK: - 分享图片
+
+struct SharePreviewSheet: View {
+    @Environment(AppModel.self) private var model
+    @Environment(\.dismiss) private var dismiss
+    let share: ShareImage
+
+    var body: some View {
+        // 等比缩放到 400×520 以内，问题再多也一眼看全，不用滚动
+        let size = share.image.size
+        let scale = min(400 / max(size.width, 1), 520 / max(size.height, 1), 1)
+        VStack(spacing: 14) {
+            Image(nsImage: share.image)
+                .resizable()
+                .interpolation(.high)
+                .frame(width: size.width * scale, height: size.height * scale)
+                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(.quaternary))
+                .onDrag { NSItemProvider(contentsOf: share.fileURL) ?? NSItemProvider() }
+                .frame(width: 400)
+
+            Text("图片只含结论和问题摘要，不含 IP 地址。也可以直接把图片拖出去。")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            HStack {
+                Button("完成") { dismiss() }
+                    .keyboardShortcut(.cancelAction)
+                Spacer()
+                Button("存储…") { model.saveShareImage(share) }
+                ShareLink(item: share.fileURL, preview: SharePreview("ccenv 检测结果", image: Image(nsImage: share.image))) {
+                    Text("分享…")
+                }
+                Button("复制图片") {
+                    model.copyShareImage(share)
+                    dismiss()
+                }
+                .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(20)
     }
 }
