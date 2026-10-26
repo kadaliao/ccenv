@@ -58,17 +58,19 @@ ccenv -h                     # 帮助；-v 查看版本
 
 ## macOS 应用
 
+直接下载：到 [Releases](https://github.com/kadaliao/ccenv/releases/latest) 拿 `ccenv-<版本>.dmg`，打开后把 ccenv 拖进 Applications。应用没有经过 Apple 公证（ad-hoc 签名），第一次打开会被 Gatekeeper 拦下：双击一次让它弹出提示，然后到 系统设置 › 隐私与安全性 底部点「仍要打开」；或者在终端执行 `xattr -d com.apple.quarantine /Applications/ccenv.app`。最低支持 macOS 14。
+
 界面是一个窗口：顶部是结论横幅，中间两张卡片分别是出口层和系统层的事实，下面是按等级排好的冲突清单，点开任意一条能看证据、影响和处理建议。工具栏可以重新检测（⌘R）、复制文本报告 / JSON、导出 JSON 文件，选项里能切换离线模式、采样次数和超时。深色模式自动适配。
 
-构建需要 Xcode 15 以上（Swift 5.9+），不需要 Xcode 工程：
+自己构建需要 Xcode 15 以上（Swift 5.9+），不需要 Xcode 工程：
 
 ```bash
 npm run app                  # 等价于 macos/build.sh，产出 macos/dist/ccenv.app
-macos/build.sh --zip         # 另外打一个 macos/dist/ccenv-macos.zip
+macos/build.sh --dmg --zip   # 另外打出 dmg 和 zip
 open macos/dist/ccenv.app
 ```
 
-应用是 ad-hoc 签名的，第一次打开如果被 Gatekeeper 拦下，右键选「打开」即可；或者 `xattr -d com.apple.quarantine ccenv.app`。最低支持 macOS 14。
+本地构建的 app 没有 quarantine 标记，直接就能打开。推 `v*` 标签会触发 GitHub Actions 自动构建并把 dmg / zip 挂到 Release。
 
 ### 两套实现怎么保持一致
 

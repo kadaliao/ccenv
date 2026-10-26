@@ -1,7 +1,7 @@
 #!/bin/bash
 # 把 Swift Package 打成可双击的 ccenv.app（ad-hoc 签名，免 Xcode 工程）。
-# 用法: macos/build.sh            → macos/dist/ccenv.app
-#       macos/build.sh --zip      → 另外产出 macos/dist/ccenv-macos.zip
+# 用法: macos/build.sh                 → macos/dist/ccenv.app
+#       macos/build.sh --dmg --zip     → 另外产出 dist/ccenv-<ver>.dmg 和 dist/ccenv-<ver>-macos.zip
 set -euo pipefail
 cd "$(dirname "$0")"
 
@@ -33,11 +33,26 @@ echo "▸ 签名（ad-hoc）"
 codesign --force --deep --sign - --identifier com.kadaliao.ccenv "$APP" 2>&1 | grep -v 'replacing existing signature' || true
 codesign --verify --deep --strict "$APP"
 
-if [ "${1:-}" = "--zip" ]; then
-  echo "▸ 打包 zip"
-  rm -f "$DIST/ccenv-macos.zip"
-  ditto -c -k --keepParent "$APP" "$DIST/ccenv-macos.zip"
-  echo "   $DIST/ccenv-macos.zip"
-fi
+for arg in "$@"; do
+  case "$arg" in
+    --zip)
+      echo "▸ 打包 zip"
+      rm -f "$DIST/ccenv-$VERSION-macos.zip"
+      ditto -c -k --keepParent "$APP" "$DIST/ccenv-$VERSION-macos.zip"
+      echo "   $DIST/ccenv-$VERSION-macos.zip"
+      ;;
+    --dmg)
+      echo "▸ 打包 dmg"
+      STAGE="$DIST/dmg-stage"
+      rm -rf "$STAGE" "$DIST/ccenv-$VERSION.dmg"
+      mkdir -p "$STAGE"
+      cp -R "$APP" "$STAGE/"
+      ln -s /Applications "$STAGE/Applications"
+      hdiutil create -quiet -volname "ccenv $VERSION" -srcfolder "$STAGE" -ov -format UDZO "$DIST/ccenv-$VERSION.dmg"
+      rm -rf "$STAGE"
+      echo "   $DIST/ccenv-$VERSION.dmg"
+      ;;
+  esac
+done
 
 echo "✓ $APP  (v$VERSION build $BUILD)"
