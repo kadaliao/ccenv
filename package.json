@@ -1,14 +1,22 @@
 {
   "name": "ccenv",
-  "version": "0.1.0",
-  "description": "Environment consistency checker for network exit / timezone / locale / fonts / DNS. Local-first, zero dependencies.",
+  "version": "0.2.0",
+  "description": "Environment consistency checker for network exit / timezone / locale / fonts / DNS. Local-first, zero dependencies. Ships a CLI and a native macOS app.",
   "type": "module",
   "license": "MIT",
   "author": "Kada Liao",
+  "repository": { "type": "git", "url": "git+https://github.com/kadaliao/ccenv.git" },
+  "homepage": "https://github.com/kadaliao/ccenv#readme",
   "bin": { "ccenv": "./bin/ccenv.js" },
+  "main": "./src/index.js",
+  "exports": "./src/index.js",
+  "files": ["bin", "src", "README.md", "LICENSE"],
   "scripts": {
     "start": "node bin/ccenv.js",
-    "json": "node bin/ccenv.js --json"
+    "json": "node bin/ccenv.js --json",
+    "test": "node --test \"test/**/*.test.js\"",
+    "app": "macos/build.sh",
+    "parity": "macos/parity.sh"
   },
   "keywords": [
     "fingerprint",
@@ -18,7 +26,8 @@
     "geoip",
     "dns-leak",
     "privacy",
-    "cli"
+    "cli",
+    "macos"
   ],
   "engines": { "node": ">=20" }
 }

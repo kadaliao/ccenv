@@ -1,6 +1,6 @@
 // 规则层：跨层找矛盾，而不是把「像哪个国家」的分数相加。
 //
-// 两条设计纪律（针对 check-cc 的缺陷）：
+// 两条设计纪律：
 // 1. 一个规则只对应一个底层事实。出口 IP 抖动这件事只由 ip-stability 一条规则报告，
 //    不拆成「采样抖动」+「多源分歧」两条各自加分——那就是重复计权。
 // 2. 规则只输出离散等级（high/medium/low/ok/info），不做任意权重累加。
@@ -61,7 +61,7 @@ export const RULES = [
       if (!geo?.country) return skip("未取得出口国家（离线或情报源全失败）");
       const loc = ctx.system.locale;
       const lang = loc.primary?.language ?? null;
-      const localeRegion = loc.primary?.region ?? loc.apple?.region ?? null;
+      const localeRegion = loc.apple?.region ?? loc.primary?.region ?? null;
       const home = lang ? LANG_HOME[lang] : null;
       const evidence = [
         ["出口国家", `${regionName(geo.country)} (${geo.country})`],
@@ -70,12 +70,12 @@ export const RULES = [
       ];
       if (localeRegion === geo.country) return ok("系统区域与出口国家一致", { evidence });
       if (home?.has(geo.country)) {
-        evidence.push(["说明", `该语言在 ${regionName(geo.country)} 也常用，仅有区域子标签差异`]);
+        evidence.push(["说明", `${lang} 在 ${regionName(geo.country)} 也是常用语言，仅区域子标签不同`]);
         return { level: "low", summary: "语言与出口国家相容，仅区域设置不同", evidence };
       }
       return {
         level: "medium",
-        summary: `系统区域是 ${localeRegion ?? "未知"}，出口在 ${regionName(geo.country)}`,
+        summary: `系统区域是 ${localeRegion ? regionName(localeRegion) : "未知"}，出口在 ${regionName(geo.country)}`,
         evidence,
       };
     },
@@ -125,15 +125,16 @@ export const RULES = [
     evaluate(ctx) {
       const e = ctx.egress;
       if (!e?.ok) return skip("未取得出口 IP");
+      const echoCount = e.crossEchoes.filter((c) => c.ip).length;
       if (e.distinctCount <= 1) {
-        return ok(`出口稳定（${e.sampleCount} 次采样、${e.crossEchoes.length} 个独立回显均同一 IP）`, {
+        return ok(`出口稳定（${e.sampleCount} 次采样、${echoCount} 个独立回显均同一 IP）`, {
           evidence: [["出口 IP", e.primary.ip]],
         });
       }
       const evidence = [
         ["观测到的 IP", e.distinctIps.map((d) => `${d.ip}（${d.count} 次）`).join(" / ")],
         ["重复采样", `${e.sampleCount} 次，其中 ${e.sampledDistinctCount} 个不同 IP`],
-        ["多源交叉", e.crossEchoes.map((c) => `${c.echo}=${c.ip}`).join(" / ")],
+        ["多源交叉", e.crossEchoes.filter((c) => c.ip).map((c) => `${c.echo}=${c.ip}`).join(" / ") || "无"],
         ["是否同 /24", e.samePrefix ? "是（同一出口池轮询）" : "否（跨网段/跨地区）"],
       ];
       if (!e.samePrefix) {
@@ -162,7 +163,7 @@ export const RULES = [
       const geo = ctx.egress?.primary;
       if (!geo || geo.sources.length < 2) return skip("有效情报源不足 2 个，无法交叉验证");
       const evidence = [
-        ["国家", `${geo.countries.join(" / ") || "无"}`],
+        ["国家", `${geo.countries.map(regionName).join(" / ") || "无"}`],
         ["ASN", `${geo.asns.join(" / ") || "无"}`],
         ["情报源", geo.sources.join(", ")],
       ];
@@ -173,6 +174,33 @@ export const RULES = [
       "如果不同 GeoIP 库对同一个出口给出不同国家，说明这个 IP 段归属模糊（anycast、刚过户、或分级转售）。" +
       "这类出口在对方风控里同样呈现为「画像不确定」。",
     fix: ["换一个归属清晰的出口；至少记录下来，出问题时可作为申诉背景"],
+  },
+
+  {
+    id: "clock-skew",
+    group: "consistency",
+    title: "本机时钟 ↔ 服务器时间",
+    evaluate(ctx) {
+      const clock = ctx.egress?.clock;
+      if (!clock) return skip("未取得服务端时间戳（离线或回显未带时间）");
+      if (clock.rttMs > 4000) return skip(`回显往返 ${clock.rttMs} ms 过长，时钟对比不可靠`);
+      const skew = Math.round(clock.skewMs);
+      const abs = Math.abs(skew);
+      const human = abs < 1000 ? `${abs} ms` : abs < 60000 ? `${(abs / 1000).toFixed(1)} 秒` : `${(abs / 60000).toFixed(1)} 分钟`;
+      const evidence = [
+        ["偏差", `${skew >= 0 ? "本机快" : "本机慢"} ${human}`],
+        ["对比来源", clock.source + (clock.coarse ? "（秒级精度）" : "")],
+        ["往返时延", `${clock.rttMs} ms`],
+      ];
+      const tolerance = clock.coarse ? 3000 : 1500;
+      if (abs <= tolerance) return ok("本机时钟与服务器时间一致", { evidence });
+      if (abs <= 30000) return { level: "low", summary: `本机时钟偏差 ${human}`, evidence };
+      if (abs <= 300000) return { level: "medium", summary: `本机时钟偏差 ${human}，超过常见容忍范围`, evidence };
+      return { level: "high", summary: `本机时钟偏差 ${human}，TLS/签名类请求可能直接失败`, evidence };
+    },
+    impact:
+      "客户端上报的时间戳和服务器时间差得多，会被当作「设备时钟被改过」或虚拟机快照恢复；超过几分钟还会让 TOTP、签名请求失效。",
+    fix: ["打开 系统设置 › 通用 › 日期与时间 的自动设置；虚拟机里确认宿主时间同步"],
   },
 
   {
@@ -237,6 +265,7 @@ export const RULES = [
         ["v6 归属", `${regionName(v6?.country)} (${v6?.country ?? "?"}) ${v6?.asn ?? ""}`.trim()],
         ["IPv4 归属", `${regionName(e.primary.country)} (${e.primary.country}) ${e.primary.asn ?? ""}`.trim()],
       ];
+      if (e.v6ViaDualStackEcho) evidence.push(["说明", "双栈回显服务优先走了 v6，说明系统对双栈目标会优先用 v6 直连"]);
       if (!v6?.country) return info("存在 IPv6 出口，但归属未知", { evidence });
       if (v6.country === e.primary.country) return ok("IPv6 与 IPv4 出口国家一致", { evidence });
       return { level: "high", summary: "IPv6 出口与 IPv4 出口不在同一国家，等于同时暴露两个地点", evidence };
@@ -255,7 +284,7 @@ export const RULES = [
       if (!dns.resolvers.length) return skip("未读取到 DNS 解析器");
 
       const scopedText = dns.scoped.length
-        ? dns.scoped.map((s) => `en${s.ifIndex ?? "?"} → ${s.nameservers.join(",")}`).join("；")
+        ? dns.scoped.map((s) => `${s.ifName ?? `if#${s.ifIndex ?? "?"}`} → ${s.nameservers.join(",")}`).join("；")
         : "无";
       const perDomainText = dns.perDomain.length
         ? `${dns.perDomain.length} 条按域名路由（如 ${dns.perDomain[0].domain} → ${dns.perDomain[0].nameservers.join(",")}）`
@@ -299,17 +328,17 @@ export const RULES = [
         ["Office/Windows 系", f.thirdParty.length ? f.thirdParty.slice(0, 4).join(", ") : "无"],
       ];
       if (!f.vendor.length) return ok("未发现整机厂商定制字体", { evidence });
-      if (geo?.country === "CN") return ok("厂商字体与出口国家一致", { evidence });
+      if (!geo?.country) return info("存在整机厂商定制字体（未取得出口国家，无法比对）", { evidence });
+      if (geo.country === "CN") return ok("厂商字体与出口国家一致", { evidence });
       return {
         level: "low",
-        summary: `存在整机厂商定制字体，但出口在 ${regionName(geo?.country)}`,
+        summary: `存在整机厂商定制字体，但出口在 ${regionName(geo.country)}`,
         evidence,
       };
     },
     impact:
       "MiSans/HarmonyOS Sans/OPPO Sans 这类字体只会随国产定制系统出现，是真实的设备地区证据；" +
-      "而 macOS 预装的 Hiragino/STHeiti/Songti 全世界每台 Mac 都有，零信息量——" +
-      "把两者混在一起算分（check-cc 的做法）会直接给所有 Mac 送分。",
+      "而 macOS 预装的 Hiragino/STHeiti/Songti 全世界每台 Mac 都有，零信息量——把两者混在一起算分会直接给所有 Mac 送分。",
     fix: ["无需处理，仅作为画像说明；如确实要消除，卸载第三方厂商字体即可"],
   },
 
@@ -321,12 +350,12 @@ export const RULES = [
       const hw = ctx.system.hardware;
       const rt = ctx.system.runtime;
       const evidence = [
-        ["Node", `${rt.node} (${process.platform}/${process.arch})`],
+        ["运行时", `${rt.node} (${process.platform}/${hw.arch})`],
         ["机器", `${hw.chip ?? "未知"} / ${hw.machineArch}`],
         ["Rosetta", hw.rosetta ? "是" : "否"],
         ["终端", `${rt.term ?? "未知"} · ${rt.shell ?? "未知"}`],
       ];
-      if (hw.rosetta || process.arch !== hw.machineArch) {
+      if (hw.rosetta || hw.arch !== hw.machineArch) {
         return { level: "low", summary: "客户端运行在转译/异构架构下，UA 与硬件线索会不一致", evidence };
       }
       return ok("运行时与硬件架构一致", { evidence });
@@ -336,13 +365,15 @@ export const RULES = [
   },
 ];
 
+const VERDICTS = { high: "severe", medium: "notable", low: "minor", info: "consistent", ok: "consistent" };
+
 export function runRules(ctx) {
   const results = RULES.map((rule) => {
     let outcome;
     try {
       outcome = rule.evaluate(ctx);
     } catch (err) {
-      outcome = { level: "info", summary: `规则执行失败：${err.message}` };
+      outcome = { level: "info", skipped: true, summary: `规则执行失败：${err.message}` };
     }
     return {
       id: rule.id,
@@ -358,7 +389,6 @@ export function runRules(ctx) {
     (a, b) => LEVEL_RANK[a.level] - LEVEL_RANK[b.level] || a.id.localeCompare(b.id),
   );
   const worst = ranked.find((r) => !r.skipped)?.level ?? "ok";
-  const VERDICTS = { high: "severe", medium: "notable", low: "minor", info: "consistent", ok: "consistent" };
   const verdict = VERDICTS[worst] ?? "consistent";
 
   return { results: ranked, worst, verdict };

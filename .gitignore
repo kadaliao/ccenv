@@ -1,3 +1,7 @@
 node_modules/
 *.log
 .DS_Store
+macos/.build/
+macos/dist/
+macos/.swiftpm/
+macos/*.xcodeproj

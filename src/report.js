@@ -3,6 +3,8 @@
 import { formatOffset, offsetMinutesFor } from "./system.js";
 import { regionName } from "./classify.js";
 
+export const SCHEMA_VERSION = 2;
+
 const useColor = () => Boolean(process.stdout.isTTY) && !process.env.NO_COLOR;
 
 const c = (code) => (s) => (useColor() ? `\x1b[${code}m${s}\x1b[0m` : String(s));
@@ -22,7 +24,7 @@ const LEVEL_STYLE = {
   ok: { label: "OK    ", paint: green },
 };
 
-const VERDICT_TEXT = {
+export const VERDICT_TEXT = {
   severe: { text: "严重冲突", paint: red },
   notable: { text: "明显冲突", paint: yellow },
   minor: { text: "轻度冲突", paint: blue },
@@ -58,7 +60,7 @@ function wrap(text, indent, width = BODY_COL) {
     }
   }
   if (line) lines.push(line);
-  return lines.map((l) => `${" ".repeat(indent)}${l}`).join("\n");
+  return lines.map((l, i) => (i === 0 ? l : `${" ".repeat(indent)}${l}`)).join("\n");
 }
 
 const section = (title) => `\n${bold(title)}\n${dim("─".repeat(52))}`;
@@ -87,7 +89,7 @@ function renderFacts(ctx) {
       ["类型", `${kindLabel(p.classification.kind)}  ${dim(`置信 ${p.classification.confidence}`)}`],
       ["出口时区", `${p.timezone ?? "?"} ${dim(`(${formatOffset(offsetMinutesFor(p.timezone))})`)}`],
       ["IPv6", e.v6 ? `${e.v6} ${dim(`(${regionName(e.v6Intel?.country)})`)}` : dim("无 v6 出口")],
-      ["情报源", dim(p.sources.join(", ") || "无")],
+      ["情报源", dim(`${p.sources.join(", ") || "无"} · 耗时 ${((e.durationMs ?? 0) / 1000).toFixed(1)}s`)],
     ];
     for (const [k, v] of rows) lines.push(`  ${dim(padTo(k, LABEL_COL))} ${v}`);
   }
@@ -97,14 +99,15 @@ function renderFacts(ctx) {
   const tzDelta = geoOffset != null ? Math.abs(s.timezone.offsetMinutes - geoOffset) : null;
   const tzWarn = tzDelta != null && tzDelta >= 120 ? red(" ← 与出口不一致") : "";
   const vendorText = ctx.fonts.vendor.length ? yellow(ctx.fonts.vendor.slice(0, 4).join(", ")) : "0";
+  const tunText = s.proxy.tunnels?.length ? s.proxy.tunnels.map((t) => `${t.name}(${t.addrs[0]})`).join(",") : "-";
   const sysRows = [
     ["时区", `${s.timezone.intl ?? "?"} (${s.timezone.offsetLabel})${tzWarn}  ${dim(`localtime=${s.timezone.localtimeLink ?? "?"} TZ=${s.timezone.env ?? "未设"}`)}`],
     ["语言", `${s.locale.appleLanguages.join(", ") || s.locale.envRaw || "?"}  ${dim(`AppleLocale=${s.locale.appleLocale ?? "?"}`)}`],
     ["Shell", `LANG=${s.locale.envRaw ?? "未设置"}`],
     ["字体", `预装 CJK ${ctx.fonts.stock.length}${dim("(不计分)")} · 三方 ${ctx.fonts.thirdParty.length} · 厂商 ${vendorText}`],
-    ["链路", `${s.proxy.active ? green("经代理") : dim("直连")} ${dim(`apps=[${s.proxy.apps.join(",") || "-"}] tun=${s.proxy.tun.length} sysProxy=${s.proxy.system.https === true ? "on" : "off"}`)}`],
+    ["链路", `${s.proxy.active ? green("经代理") : dim("直连")} ${dim(`apps=[${s.proxy.apps.join(",") || "-"}] tun=[${tunText}] sysProxy=${s.proxy.system.https === true ? "on" : "off"}`)}`],
     ["DNS", `${s.dns.defaults.join(", ") || "?"} ${s.dns.allThroughProxy ? green("(默认走代理)") : yellow("(默认含公网)")}${s.dns.scoped.length ? dim(` + ${s.dns.scoped.length} 个接口级限定`) : ""}`],
-    ["设备", `${s.hardware.os} · ${s.hardware.chip ?? "?"} · ${s.hardware.arch}${s.hardware.rosetta ? yellow(" (Rosetta)") : ""}`],
+    ["设备", `${s.hardware.os} · ${s.hardware.chip ?? "?"} · ${s.hardware.machineArch}${s.hardware.rosetta ? yellow(" (Rosetta)") : ""}`],
     ["运行时", `node ${s.runtime.node} · ${s.runtime.term ?? "?"} · ${s.runtime.shell ?? "?"}`],
   ];
   for (const [k, v] of sysRows) lines.push(`  ${dim(padTo(k, LABEL_COL))} ${v}`);
@@ -168,39 +171,48 @@ export function renderReport(ctx, { results, worst, verdict }, { explain = false
   return out.join("\n");
 }
 
-export function renderJson(ctx, verdict) {
-  return JSON.stringify(
-    {
-      tool: "ccenv",
-      generatedAt: new Date().toISOString(),
-      verdict: { value: verdict.verdict, worst: verdict.worst },
-      facts: {
-        egress: ctx.egress?.ok
-          ? {
-              ips: ctx.egress.distinctIps,
-              distinctCount: ctx.egress.distinctCount,
-              sampledDistinctCount: ctx.egress.sampledDistinctCount,
-              samePrefix: ctx.egress.samePrefix,
-              primary: ctx.egress.primary,
-              v6: ctx.egress.v6,
-              v6Country: ctx.egress.v6Intel?.country ?? null,
-              crossEchoes: ctx.egress.crossEchoes,
-            }
-          : { ok: false, error: ctx.egress?.error ?? null },
-        system: ctx.system,
-        fonts: { stock: ctx.fonts.stock, thirdParty: ctx.fonts.thirdParty, vendor: ctx.fonts.vendor },
-      },
-      rules: verdict.results.map((r) => ({
-        id: r.id,
-        group: r.group,
-        title: r.title,
-        level: r.level,
-        skipped: Boolean(r.skipped),
-        summary: r.summary,
-        evidence: r.evidence ?? [],
-      })),
+/** 结构化结果。schema 字段变更时递增 SCHEMA_VERSION。 */
+export function toJson(ctx, verdict, { version = "0.0.0" } = {}) {
+  return {
+    tool: "ccenv",
+    version,
+    schema: SCHEMA_VERSION,
+    generatedAt: new Date().toISOString(),
+    verdict: { value: verdict.verdict, worst: verdict.worst },
+    facts: {
+      egress: ctx.egress?.ok
+        ? {
+            ok: true,
+            ips: ctx.egress.distinctIps,
+            distinctCount: ctx.egress.distinctCount,
+            sampledDistinctCount: ctx.egress.sampledDistinctCount,
+            sampleCount: ctx.egress.sampleCount,
+            samePrefix: ctx.egress.samePrefix,
+            primary: ctx.egress.primary,
+            v6: ctx.egress.v6,
+            v6Country: ctx.egress.v6Intel?.country ?? null,
+            crossEchoes: ctx.egress.crossEchoes,
+            clock: ctx.egress.clock,
+            durationMs: ctx.egress.durationMs,
+          }
+        : { ok: false, error: ctx.egress?.error ?? null },
+      system: ctx.system,
+      fonts: { stock: ctx.fonts.stock, thirdParty: ctx.fonts.thirdParty, vendor: ctx.fonts.vendor },
     },
-    null,
-    2,
-  );
+    rules: verdict.results.map((r) => ({
+      id: r.id,
+      group: r.group,
+      title: r.title,
+      level: r.level,
+      skipped: Boolean(r.skipped),
+      summary: r.summary,
+      evidence: r.evidence ?? [],
+      impact: r.impact,
+      fix: r.fix ?? [],
+    })),
+  };
+}
+
+export function renderJson(ctx, verdict, opts) {
+  return JSON.stringify(toJson(ctx, verdict, opts), null, 2);
 }
