@@ -1,0 +1,24 @@
+{
+  "name": "ccenv",
+  "version": "0.1.0",
+  "description": "Environment consistency checker for network exit / timezone / locale / fonts / DNS. Local-first, zero dependencies.",
+  "type": "module",
+  "license": "MIT",
+  "author": "Kada Liao",
+  "bin": { "ccenv": "./bin/ccenv.js" },
+  "scripts": {
+    "start": "node bin/ccenv.js",
+    "json": "node bin/ccenv.js --json"
+  },
+  "keywords": [
+    "fingerprint",
+    "consistency",
+    "timezone",
+    "asn",
+    "geoip",
+    "dns-leak",
+    "privacy",
+    "cli"
+  ],
+  "engines": { "node": ">=20" }
+}
