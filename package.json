@@ -7,7 +7,7 @@
   "author": "Kada Liao",
   "repository": { "type": "git", "url": "git+https://github.com/kadaliao/ccenv.git" },
   "homepage": "https://github.com/kadaliao/ccenv#readme",
-  "bin": { "ccenv": "./bin/ccenv.js" },
+  "bin": { "ccenv": "bin/ccenv.js" },
   "main": "./src/index.js",
   "exports": "./src/index.js",
   "files": ["bin", "src", "README.md", "LICENSE"],
