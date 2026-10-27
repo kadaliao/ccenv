@@ -2,12 +2,9 @@
 
 ccenv 用来回答一个很具体的问题：这台 Mac 的网络出口、系统时区、区域语言、字体、DNS、时钟和进程架构这几层画像之间，有没有互相矛盾的地方。它只做事实核对，输出一份带具体证据的冲突清单，不打综合风险分，也不判断环境「像哪个国家」。所有比对都在本地完成，检测本身不读取任何账号信息，网络层只向几个公开的 IP 回显 / GeoIP 接口发请求。
 
-另外附带两个小功能：查看 Claude 在本机留下的标识（「指纹」），可以存快照、前后对比、重新生成 Claude Code 的随机 ID；以及检查和安装 ccenv 自己的新版本。
+另外附带两个小功能：查看 Claude 在本机留下的标识（「指纹」），可以存快照、前后对比、重新生成 Claude Code 的随机 ID；以及 macOS 应用的自动更新。
 
-有两种形态，共用同一套规则：
-
-- **命令行**：零依赖的 Node CLI，Node 20 以上即可，适合脚本和 CI。
-- **macOS 应用**：原生 SwiftUI 写的 `ccenv.app`，不需要装 Node，打开就跑，适合日常随手查。
+正式发布的只有 **macOS 应用**：原生 SwiftUI 写的 `ccenv.app`，不需要装 Node，打开就跑，到 [Releases](https://github.com/kadaliao/ccenv/releases/latest) 下载。仓库里还有一份零依赖的 Node CLI，和应用共用同一套规则，用来做对拍和脚本化检测，只从源码运行，不发 npm 包。
 
 ## 为什么重写
 
@@ -21,12 +18,12 @@ ccenv 用来回答一个很具体的问题：这台 Mac 的网络出口、系统
 
 ## 命令行
 
-npm 包名是 `@kadaliao/ccenv`，装好后命令叫 `ccenv`。npm 上不带 scope 的 `ccenv` 是另一个不相关的项目，别装错。
+只从源码运行，Node 20 以上，零依赖。不发 npm 包；npm 上的 `ccenv` 是另一个不相关的项目。
 
 ```bash
-npm install -g @kadaliao/ccenv                                     # 全局安装
-npx @kadaliao/ccenv                                                # 不安装，临时跑一次
-git clone https://github.com/kadaliao/ccenv && cd ccenv && npm link   # 从源码装
+git clone https://github.com/kadaliao/ccenv && cd ccenv
+node bin/ccenv.js            # 直接运行
+npm link                     # 或者链接成全局的 ccenv 命令，之后 git pull 即更新
 ```
 
 ```bash
@@ -38,7 +35,6 @@ ccenv --samples 12           # 出口 IP 采样次数，默认 6
 ccenv --timeout 5000         # 单次网络超时，默认 8000 ms
 ccenv --exit-code            # 有 high 级冲突时退出码 1，给 CI 用
 ccenv -h                     # 帮助；-v 查看版本
-ccenv update                 # 检查并安装新版本（npm install -g），--check 只检查
 ```
 
 输出分三块：结论、事实面板、规则清单。
@@ -145,6 +141,6 @@ cd macos && swift test       # Swift 单元测试
 
 ## 已知限制
 
-`ip-kind` 完全是启发式的。免费接口大多不返回数据中心标记，只能靠已知托管 ASN 名单、组织名关键字和 rDNS 形态推测，有标记时才会直接采信。检测出来的矛盾也不等于真有风险：跨国办公、公司共享出口、系统设中文但人确实在国外，都会合理触发时区或区域规则。代码只在 macOS 上跑过，CLI 在 Linux 上的降级分支没测过。网络层连的是 ipify、Cloudflare trace、ipwho.is、ipinfo.io 和 ipapi.is 这几个公开接口；检查更新另外访问 api.github.com（应用）或 registry.npmjs.org（命令行）。
+`ip-kind` 完全是启发式的。免费接口大多不返回数据中心标记，只能靠已知托管 ASN 名单、组织名关键字和 rDNS 形态推测，有标记时才会直接采信。检测出来的矛盾也不等于真有风险：跨国办公、公司共享出口、系统设中文但人确实在国外，都会合理触发时区或区域规则。代码只在 macOS 上跑过，CLI 在 Linux 上的降级分支没测过。网络层连的是 ipify、Cloudflare trace、ipwho.is、ipinfo.io 和 ipapi.is 这几个公开接口；macOS 应用检查更新时另外访问 api.github.com。
 
 本项目代码全部重写，未包含原项目源码。GitHub 仓库在 kadaliao/ccenv，MIT 许可。

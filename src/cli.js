@@ -13,7 +13,6 @@ export const HELP = `ccenv — 环境一致性检测（一致性冲突 + 真实 
       --diff <文件|latest>     和一份快照逐项对比
       --reset                  重新生成 Claude Code 的随机 ID（userID / machineID），先自动存快照和备份
       --yes                    --reset 时跳过确认
-  ccenv update [--check]       检查并安装新版本；--check 只检查不安装
 
 检测选项:
   --json               输出结构化 JSON
@@ -33,7 +32,7 @@ export const HELP = `ccenv — 环境一致性检测（一致性冲突 + 真实 
   画像    出口 IP 类型（住宅/机房） · 设备厂商定制字体
 `;
 
-const COMMANDS = { fingerprint: "fingerprint", fp: "fingerprint", update: "update", check: "check" };
+const COMMANDS = { fingerprint: "fingerprint", fp: "fingerprint", check: "check" };
 
 export function parseArgs(argv) {
   const opts = { command: "check", samples: 6, intervalMs: 350, timeoutMs: 8000, json: false, explain: false, offline: false, exitCode: false };
@@ -106,10 +105,6 @@ export function parseArgs(argv) {
       case "--yes":
       case "-y":
         opts.yes = true;
-        break;
-      case "--check":
-        only(arg, "update");
-        opts.checkOnly = true;
         break;
       case "-v":
       case "--version":

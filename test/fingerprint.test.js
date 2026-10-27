@@ -5,7 +5,6 @@ import os from "node:os";
 import path from "node:path";
 
 import { claudeCodeItems, diffFingerprints, isClaudeCodeProcess, maskValue, regenerateIds, regenerateInText } from "../src/fingerprint.js";
-import { compareVersions } from "../src/update.js";
 import { parseArgs } from "../src/cli.js";
 
 const HEX = (c) => c.repeat(64);
@@ -74,13 +73,6 @@ test("isClaudeCodeProcess 认得原生版、npm 版和 claude 命令", () => {
   assert.ok(!isClaudeCodeProcess("vim claude.md"));
 });
 
-test("compareVersions 按数字比较", () => {
-  assert.equal(compareVersions("0.10.0", "0.9.9"), 1);
-  assert.equal(compareVersions("v1.2.3", "1.2.3"), 0);
-  assert.equal(compareVersions("1.2", "1.2.1"), -1);
-  assert.equal(compareVersions("1.3.0-beta.1", "1.2.9"), 1);
-});
-
 test("parseArgs 支持子命令，子命令专属参数不能乱用", () => {
   assert.equal(parseArgs([]).command, "check");
   assert.deepEqual(
@@ -88,7 +80,7 @@ test("parseArgs 支持子命令，子命令专属参数不能乱用", () => {
     { command: "fingerprint", save: true, diff: "latest", reveal: true },
   );
   assert.equal(parseArgs(["fingerprint", "--save", "out.json"]).save, "out.json");
-  assert.equal(parseArgs(["update", "--check"]).checkOnly, true);
+  assert.throws(() => parseArgs(["update"]), /未知命令/);
   assert.throws(() => parseArgs(["--reset"]), /只能用于/);
   assert.throws(() => parseArgs(["nope"]), /未知命令/);
   assert.throws(() => parseArgs(["fp", "--diff"]), /需要一个快照/);
