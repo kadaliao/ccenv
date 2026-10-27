@@ -4,7 +4,18 @@ export const HELP = `ccenv — 环境一致性检测（一致性冲突 + 真实 
 
 它不回答「你像哪个国家」，而是回答「你的各层画像之间有没有互相矛盾」。
 
-选项:
+命令:
+  ccenv [选项]                 环境一致性检测（默认）
+  ccenv fingerprint [选项]     查看 Claude 在本机留下的标识（别名 fp）
+      --reveal                 显示完整值（默认打码）
+      --json                   输出结构化 JSON
+      --save [文件]            保存快照，默认存到 ~/.ccenv/fingerprints/
+      --diff <文件|latest>     和一份快照逐项对比
+      --reset                  重新生成 Claude Code 的随机 ID（userID / machineID），先自动存快照和备份
+      --yes                    --reset 时跳过确认
+  ccenv update [--check]       检查并安装新版本；--check 只检查不安装
+
+检测选项:
   --json               输出结构化 JSON
   --explain            对每个冲突项输出影响说明与处理建议
   --offline            跳过网络层（只检测时区/语言/字体/代理/DNS）
@@ -22,9 +33,20 @@ export const HELP = `ccenv — 环境一致性检测（一致性冲突 + 真实 
   画像    出口 IP 类型（住宅/机房） · 设备厂商定制字体
 `;
 
+const COMMANDS = { fingerprint: "fingerprint", fp: "fingerprint", update: "update", check: "check" };
+
 export function parseArgs(argv) {
-  const opts = { samples: 6, intervalMs: 350, timeoutMs: 8000, json: false, explain: false, offline: false, exitCode: false };
-  for (let i = 0; i < argv.length; i += 1) {
+  const opts = { command: "check", samples: 6, intervalMs: 350, timeoutMs: 8000, json: false, explain: false, offline: false, exitCode: false };
+  let start = 0;
+  if (argv[0] && !argv[0].startsWith("-")) {
+    opts.command = COMMANDS[argv[0]];
+    if (!opts.command) throw new Error(`未知命令: ${argv[0]}`);
+    start = 1;
+  }
+  const only = (arg, ...commands) => {
+    if (!commands.includes(opts.command)) throw new Error(`${arg} 只能用于 ccenv ${commands.join(" / ")}`);
+  };
+  for (let i = start; i < argv.length; i += 1) {
     const arg = argv[i];
     const nextNumber = ({ min, fallback }) => {
       const v = argv[i + 1];
@@ -58,6 +80,36 @@ export function parseArgs(argv) {
         break;
       case "--timeout":
         opts.timeoutMs = nextNumber({ min: 1000, fallback: 1000 });
+        break;
+      case "--reveal":
+        only(arg, "fingerprint");
+        opts.reveal = true;
+        break;
+      case "--save": {
+        only(arg, "fingerprint");
+        const v = argv[i + 1];
+        opts.save = v && !v.startsWith("-") ? (i += 1, v) : true;
+        break;
+      }
+      case "--diff": {
+        only(arg, "fingerprint");
+        const v = argv[i + 1];
+        if (v == null || v.startsWith("-")) throw new Error("--diff 需要一个快照文件，或 latest");
+        opts.diff = v;
+        i += 1;
+        break;
+      }
+      case "--reset":
+        only(arg, "fingerprint");
+        opts.reset = true;
+        break;
+      case "--yes":
+      case "-y":
+        opts.yes = true;
+        break;
+      case "--check":
+        only(arg, "update");
+        opts.checkOnly = true;
         break;
       case "-v":
       case "--version":

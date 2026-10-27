@@ -2,6 +2,7 @@
 
 import { formatOffset, offsetMinutesFor } from "./system.js";
 import { regionName } from "./classify.js";
+import { maskValue } from "./fingerprint.js";
 
 export const SCHEMA_VERSION = 2;
 
@@ -215,4 +216,72 @@ export function toJson(ctx, verdict, { version = "0.0.0" } = {}) {
 
 export function renderJson(ctx, verdict, opts) {
   return JSON.stringify(toJson(ctx, verdict, opts), null, 2);
+}
+
+// ── 指纹 ────────────────────────────────────────────────
+
+const DIFF_MARK = {
+  same: { tag: "  ", paint: dim },
+  changed: { tag: "≠ ", paint: yellow },
+  added: { tag: "+ ", paint: green },
+  removed: { tag: "- ", paint: red },
+};
+
+/**
+ * 指纹面板。传入 diff（diffFingerprints 的结果）时每行标出和基准快照相比的变化。
+ * 默认打码，reveal=true 显示完整值。
+ */
+export function renderFingerprint(fp, { reveal = false, diff = null, baseline = null } = {}) {
+  const show = (v, it) => (v == null ? dim("—") : reveal ? String(v) : maskValue(v, it));
+  const out = [""];
+  out.push(`${bold("ccenv")} ${dim("· Claude 本机指纹")}  ${dim(fp.generatedAt)}`);
+  out.push(dim("─".repeat(52)));
+  if (baseline) {
+    const n = (s) => diff.filter((r) => r.status === s).length;
+    out.push(`对比  ${dim(baseline)}`);
+    out.push(`      ${yellow(`${n("changed")} 项变化`)} · ${green(`${n("added")} 项新增`)} · ${red(`${n("removed")} 项消失`)} · ${dim(`${n("same")} 项未变`)}`);
+  }
+
+  const rows = diff
+    ? diff
+    : fp.items.map((i) => ({ ...i, status: null, after: i.value }));
+  const col = Math.max(LABEL_COL, ...rows.map((r) => visibleWidth(r.label) + 2));
+  const groups = [...new Set(rows.map((r) => r.group))];
+  for (const g of groups) {
+    out.push(section(g));
+    for (const r of rows.filter((x) => x.group === g)) {
+      const mark = r.status ? DIFF_MARK[r.status] : null;
+      const prefix = mark ? mark.paint(mark.tag) : "";
+      const value = r.status === "removed" ? red(show(r.before, r)) : show(r.after, r);
+      let line = `  ${prefix}${dim(padTo(r.label, col))} ${value}`;
+      if (r.status === "changed") line += dim(`  ← ${show(r.before, r)}`);
+      out.push(line);
+    }
+  }
+
+  const resettable = fp.items.filter((i) => i.resettable).length;
+  out.push("");
+  out.push(dim(`${reveal ? "" : "已打码，加 --reveal 显示完整值；"}--save 存快照，--diff latest 和上次快照对比${resettable ? "，--reset 重新生成 Claude Code 的随机 ID" : ""}。`));
+  out.push("");
+  return out.join("\n");
+}
+
+export function renderRegenerate(results, { reveal = false, running = 0 } = {}) {
+  const show = (v) => (reveal ? v : maskValue(v));
+  const out = [""];
+  const changed = results.filter((r) => r.changes.length);
+  if (!changed.length) {
+    out.push(yellow("没有可重新生成的 ID（配置文件里没有 userID / machineID）。"));
+    return out.join("\n");
+  }
+  for (const r of changed) {
+    out.push(bold(r.file));
+    for (const c of r.changes) out.push(`  ${dim(padTo(c.key, LABEL_COL))} ${green(show(c.after))}  ${dim(`← ${show(c.before)}`)}`);
+    out.push(dim(`  备份 ${r.backup}`));
+  }
+  out.push("");
+  if (running > 0) out.push(yellow(`有 ${running} 个 Claude Code 进程在运行，它们在内存里还拿着旧 ID，重启后才会用新的。`));
+  out.push(dim("账号 UUID、邮箱属于服务端身份，不受影响；要恢复旧 ID，把备份文件拷回原处即可。"));
+  out.push("");
+  return out.join("\n");
 }

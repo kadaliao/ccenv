@@ -1,11 +1,14 @@
 // 开发用钩子，普通使用不会触发：
 //   CCENV_APPEARANCE=dark|light   强制外观，便于截图对比
 //   CCENV_SNAPSHOT=/path/out.png  检测完成后把窗口渲染成 PNG 并退出（不需要屏幕录制权限）
+//   CCENV_TAB=fingerprint         启动时直接打开指纹页
+//   CCENV_UPDATE_TEST=1           启动即检查更新，新版本下载校验完立刻退出（走「退出时安装」流程），用于端到端测试
 import AppKit
 
 enum DevHooks {
     static let appearance = ProcessInfo.processInfo.environment["CCENV_APPEARANCE"]
     static let snapshotPath = ProcessInfo.processInfo.environment["CCENV_SNAPSHOT"]
+    static let updateTest = ProcessInfo.processInfo.environment["CCENV_UPDATE_TEST"] != nil
 
     @MainActor static func applyAppearance() {
         switch appearance {
@@ -16,7 +19,7 @@ enum DevHooks {
     }
 
     static func log(_ s: String) {
-        guard snapshotPath != nil else { return }
+        guard snapshotPath != nil || updateTest else { return }
         FileHandle.standardError.write(("[ccenv] " + s + "\n").data(using: .utf8)!)
     }
 

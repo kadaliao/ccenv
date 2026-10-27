@@ -1,6 +1,8 @@
 # ccenv
 
-ccenv 用来回答一个很具体的问题：这台 Mac 的网络出口、系统时区、区域语言、字体、DNS、时钟和进程架构这几层画像之间，有没有互相矛盾的地方。它只做事实核对，输出一份带具体证据的冲突清单，不打综合风险分，也不判断环境「像哪个国家」。所有比对都在本地完成，不读取任何账号信息，网络层只向几个公开的 IP 回显 / GeoIP 接口发请求。
+ccenv 用来回答一个很具体的问题：这台 Mac 的网络出口、系统时区、区域语言、字体、DNS、时钟和进程架构这几层画像之间，有没有互相矛盾的地方。它只做事实核对，输出一份带具体证据的冲突清单，不打综合风险分，也不判断环境「像哪个国家」。所有比对都在本地完成，检测本身不读取任何账号信息，网络层只向几个公开的 IP 回显 / GeoIP 接口发请求。
+
+另外附带两个小功能：查看 Claude 在本机留下的标识（「指纹」），可以存快照、前后对比、重新生成 Claude Code 的随机 ID；以及检查和安装 ccenv 自己的新版本。
 
 有两种形态，共用同一套规则：
 
@@ -36,6 +38,7 @@ ccenv --samples 12           # 出口 IP 采样次数，默认 6
 ccenv --timeout 5000         # 单次网络超时，默认 8000 ms
 ccenv --exit-code            # 有 high 级冲突时退出码 1，给 CI 用
 ccenv -h                     # 帮助；-v 查看版本
+ccenv update                 # 检查并安装新版本（npm install -g），--check 只检查
 ```
 
 输出分三块：结论、事实面板、规则清单。
@@ -63,11 +66,38 @@ ccenv -h                     # 帮助；-v 查看版本
 
 冲突等级分 high、medium、low、info、ok 五档。离线或情报源失败导致没跑成的规则会单列为跳过项，不算通过。
 
+## Claude 本机指纹
+
+`ccenv fingerprint`（简写 `ccenv fp`）列出 Claude 在这台机器上留下的标识，只读下面这些字段，不读令牌、会话和项目数据：
+
+| 来源 | 字段 |
+| --- | --- |
+| `~/.claude.json`、`~/.claude/.claude.json`、`$CLAUDE_CONFIG_DIR/.claude.json` | `userID`（遥测 device_id）、`machineID`、`summonSidKey`、首次启动时间和版本、安装方式、账号 / 组织 UUID、账号邮箱 |
+| `~/Library/Application Support/Claude/` | 桌面版的 `ant-did`、`ccd-ids.json` 的盐、设备登记过的账号、最近账号 UUID、首次启动时间 |
+| `ioreg` | 硬件 UUID（Claude Code 的 OpenTelemetry 拿它当 host.id，只在开启 OTel 时上报）、主机名 |
+
+```bash
+ccenv fp                     # 查看，标识默认打码
+ccenv fp --reveal            # 显示完整值
+ccenv fp --save              # 存快照到 ~/.ccenv/fingerprints/，也可以 --save 指定文件
+ccenv fp --diff latest       # 和最近一份快照逐项对比：变化 / 新增 / 消失
+ccenv fp --reset             # 重新生成 Claude Code 的随机 ID
+ccenv fp --json              # 结构化输出，带 --diff 时附上对比结果
+```
+
+`--reset` 只改 Claude Code 首次运行时随机生成的 `userID`、`machineID`、`summonSidKey`（64 位十六进制），换成同样格式的新随机值，其它字节原样保留。动手前会自动存一份快照、把原文件备份到 `~/.ccenv/backups/`，写入时拿和 Claude Code 相同的配置锁（`<文件>.lock`），完成后直接显示前后对比。正在运行的 Claude Code 内存里还是旧 ID，要重启才生效；要恢复，把备份拷回原处即可。账号 UUID、邮箱、硬件 UUID 和桌面版的标识不在重新生成范围内。
+
+快照是带 `kind: "fingerprint"` 的 JSON，命令行和 macOS 应用存的格式相同，可以互相对比。快照里是完整值，文件权限 600。
+
 ## macOS 应用
 
 直接下载：到 [Releases](https://github.com/kadaliao/ccenv/releases/latest) 拿 `ccenv-<版本>.dmg`，打开后把 ccenv 拖进 Applications。dmg 用 Developer ID 签名并经过 Apple 公证，双击即可打开。最低支持 macOS 14。
 
 界面是一个窗口：顶部是结论横幅，中间两张卡片分别是出口层和系统层的事实，下面是按等级排好的冲突清单，点开任意一条能看证据、影响和处理建议。工具栏可以重新检测（⌘R）、复制文本报告 / JSON、导出 JSON 文件，选项里能切换离线模式、采样次数和超时。「分享 › 分享图片」会生成一张结论卡片，只列结论和每个问题的一句话摘要，不含 IP、ASN、DNS 这些细节，可以复制、存成 PNG、走系统分享，或者直接拖进聊天窗口。深色模式自动适配。
+
+工具栏左边切换「环境检测」和「Claude 指纹」两页（⌘1 / ⌘2）。指纹页能显示 / 隐藏完整值、单项复制、存快照、导出到文件、选一份快照对比（变化项标出旧值），以及「重新生成 ID」，确认框会提示有几个 Claude Code 进程在运行。
+
+更新：启动时（每 20 小时最多一次）查 GitHub Releases 的最新版本。发现新版本后默认在后台下载 zip，校验是同一个 Developer ID（Team ID、bundle id、版本号都要对得上）签名的包，然后在退出时替换掉当前 app；顶部横幅也可以「立即重启」。「选项」里能关掉自动检查或自动下载，菜单「ccenv › 检查更新…」手动检查。从 dmg 或下载目录直接运行时不会自动替换，要先拖进「应用程序」。
 
 自己构建需要 Xcode 15 以上（Swift 5.9+），不需要 Xcode 工程：
 
@@ -115,6 +145,6 @@ cd macos && swift test       # Swift 单元测试
 
 ## 已知限制
 
-`ip-kind` 完全是启发式的。免费接口大多不返回数据中心标记，只能靠已知托管 ASN 名单、组织名关键字和 rDNS 形态推测，有标记时才会直接采信。检测出来的矛盾也不等于真有风险：跨国办公、公司共享出口、系统设中文但人确实在国外，都会合理触发时区或区域规则。代码只在 macOS 上跑过，CLI 在 Linux 上的降级分支没测过。网络层连的是 ipify、Cloudflare trace、ipwho.is、ipinfo.io 和 ipapi.is 这几个公开接口。
+`ip-kind` 完全是启发式的。免费接口大多不返回数据中心标记，只能靠已知托管 ASN 名单、组织名关键字和 rDNS 形态推测，有标记时才会直接采信。检测出来的矛盾也不等于真有风险：跨国办公、公司共享出口、系统设中文但人确实在国外，都会合理触发时区或区域规则。代码只在 macOS 上跑过，CLI 在 Linux 上的降级分支没测过。网络层连的是 ipify、Cloudflare trace、ipwho.is、ipinfo.io 和 ipapi.is 这几个公开接口；检查更新另外访问 api.github.com（应用）或 registry.npmjs.org（命令行）。
 
 本项目代码全部重写，未包含原项目源码。GitHub 仓库在 kadaliao/ccenv，MIT 许可。

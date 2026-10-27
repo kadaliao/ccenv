@@ -6,22 +6,14 @@ struct ContentView: View {
 
     var body: some View {
         ZStack(alignment: .bottom) {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 20) {
-                    VerdictHeader()
-                    if let report = model.report {
-                        FactsGrid(report: report)
-                        RulesSections(report: report)
-                        footer(report)
-                    } else if case .failed(let msg) = model.phase {
-                        ContentUnavailableView("检测失败", systemImage: "exclamationmark.triangle", description: Text(msg))
-                    }
+            VStack(spacing: 0) {
+                UpdateBanner()
+                if model.tab == .check {
+                    checkContent
+                } else {
+                    FingerprintView()
                 }
-                .padding(24)
-                .frame(maxWidth: 1080)
-                .frame(maxWidth: .infinity)
             }
-            .background(Color(nsColor: .windowBackgroundColor))
 
             if let toast = model.toast {
                 Text(toast)
@@ -40,8 +32,46 @@ struct ContentView: View {
         }
     }
 
+    private var checkContent: some View {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 20) {
+                    VerdictHeader()
+                    if let report = model.report {
+                        FactsGrid(report: report)
+                        RulesSections(report: report)
+                        footer(report)
+                    } else if case .failed(let msg) = model.phase {
+                        ContentUnavailableView("检测失败", systemImage: "exclamationmark.triangle", description: Text(msg))
+                    }
+                }
+                .padding(24)
+                .frame(maxWidth: 1080)
+                .frame(maxWidth: .infinity)
+            }
+            .background(Color(nsColor: .windowBackgroundColor))
+    }
+
     @ToolbarContentBuilder
     private var toolbar: some ToolbarContent {
+        ToolbarItem(placement: .principal) {
+            @Bindable var m = model
+            Picker("页面", selection: $m.tab) {
+                ForEach(AppModel.Tab.allCases, id: \.self) { Text($0.title).tag($0) }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .help("⌘1 环境检测 · ⌘2 Claude 指纹")
+        }
+        if model.tab == .check {
+            checkToolbar
+        } else {
+            FingerprintToolbar()
+        }
+        ToolbarItem(placement: .primaryAction) { optionsMenu }
+    }
+
+    @ToolbarContentBuilder
+    private var checkToolbar: some ToolbarContent {
         ToolbarItemGroup(placement: .primaryAction) {
             Button {
                 model.run()
@@ -65,9 +95,13 @@ struct ContentView: View {
             }
             .help("复制或导出报告")
             .disabled(model.report == nil)
+        }
+    }
 
+    private var optionsMenu: some View {
             Menu {
                 @Bindable var m = model
+                @Bindable var u = model.updater
                 Toggle("离线模式（只查本地层）", isOn: $m.offline)
                 Picker("出口采样次数", selection: $m.samples) {
                     Text("3 次（快）").tag(3)
@@ -79,17 +113,22 @@ struct ContentView: View {
                     Text("8 秒（默认）").tag(8000)
                     Text("15 秒").tag(15000)
                 }
+                Divider()
+                Toggle("自动检查更新", isOn: $u.autoCheck)
+                Toggle("自动下载更新，退出时安装", isOn: $u.autoInstall)
+                    .disabled(!u.autoCheck)
+                Button("立即检查更新…") { model.checkForUpdates() }
+                    .disabled(u.isBusy)
             } label: {
                 Label("选项", systemImage: "slider.horizontal.3")
             }
-            .help("检测选项")
-        }
+            .help("检测与更新选项")
     }
 
     private func footer(_ report: Report) -> some View {
         HStack(spacing: 6) {
             Image(systemName: "lock.shield").foregroundStyle(.tertiary)
-            Text("ccenv \(report.version) · 所有比对在本地完成，只向公开的 IP 回显服务发请求，不读取任何账号信息。规则只找跨层矛盾，不给「像哪个国家」打分。")
+            Text("ccenv \(report.version) · 所有比对在本地完成，只向公开的 IP 回显服务发请求（检查更新时访问 GitHub），不读取任何账号信息。规则只找跨层矛盾，不给「像哪个国家」打分。")
                 .font(.caption)
                 .foregroundStyle(.tertiary)
         }

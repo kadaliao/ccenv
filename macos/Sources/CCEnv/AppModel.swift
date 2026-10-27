@@ -26,6 +26,28 @@ final class AppModel {
     var samples: Int { didSet { UserDefaults.standard.set(samples, forKey: "samples") } }
     var timeoutMs: Int { didSet { UserDefaults.standard.set(timeoutMs, forKey: "timeoutMs") } }
 
+    enum Tab: String, CaseIterable {
+        case check, fingerprint
+        var title: String { self == .check ? "环境检测" : "Claude 指纹" }
+    }
+
+    var tab: Tab = .check
+    let updater = Updater(currentVersion: AppModel.appVersion)
+
+    // 指纹
+    struct Baseline {
+        var name: String
+        var fp: Fingerprint
+    }
+
+    var fingerprint: Fingerprint?
+    var baseline: Baseline?
+    var reveal = false
+    var fingerprintBusy = false
+    var recentSnapshots: [URL] = []
+    /// 非空时弹出「重新生成」确认框，值是当前运行中的 Claude Code 进程数。
+    var regenerateConfirm: Int?
+
     @ObservationIgnored private var task: Task<Void, Never>?
     @ObservationIgnored private var toastTask: Task<Void, Never>?
 
@@ -34,6 +56,7 @@ final class AppModel {
         offline = d.bool(forKey: "offline")
         samples = d.object(forKey: "samples") as? Int ?? 6
         timeoutMs = d.object(forKey: "timeoutMs") as? Int ?? 8000
+        if ProcessInfo.processInfo.environment["CCENV_TAB"] == "fingerprint" { tab = .fingerprint }
     }
 
     var isRunning: Bool {
@@ -152,6 +175,132 @@ final class AppModel {
             } catch {
                 self?.flash("存储失败：\(error.localizedDescription)")
             }
+        }
+    }
+
+    // MARK: 更新
+
+    func checkForUpdates() {
+        Task {
+            if let msg = await updater.check(userInitiated: true) { flash(msg) }
+        }
+    }
+
+    // MARK: 指纹
+
+    var diffRows: [String: FingerprintDiffRow] {
+        guard let baseline, let fingerprint else { return [:] }
+        return Dictionary(Fingerprints.diff(baseline.fp, fingerprint).map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+    }
+
+    /// 基准快照里有、现在没有的条目。
+    var removedItems: [FingerprintItem] {
+        guard let baseline, let fingerprint else { return [] }
+        let ids = Set(fingerprint.items.map { $0.id })
+        return baseline.fp.items.filter { !ids.contains($0.id) }
+    }
+
+    func refreshFingerprint() {
+        fingerprintBusy = true
+        let version = Self.appVersion
+        Task {
+            let fp = await Task.detached(priority: .userInitiated) { Fingerprints.collect(version: version) }.value
+            withAnimation(.snappy) {
+                fingerprint = fp
+                fingerprintBusy = false
+                recentSnapshots = Array(Fingerprints.listSnapshots().suffix(8).reversed())
+            }
+        }
+    }
+
+    func saveSnapshot() {
+        guard let fingerprint else { return }
+        do {
+            let url = try Fingerprints.save(fingerprint)
+            recentSnapshots = Array(Fingerprints.listSnapshots().suffix(8).reversed())
+            flash("快照已存到 ~/.ccenv/fingerprints/\(url.lastPathComponent)")
+        } catch {
+            flash("存储失败：\(error.localizedDescription)")
+        }
+    }
+
+    func exportFingerprint() {
+        guard let fingerprint else { return }
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.json]
+        panel.canCreateDirectories = true
+        panel.nameFieldStringValue = "ccenv-fingerprint-\(fingerprint.generatedAt.replacingOccurrences(of: ":", with: "-").prefix(19)).json"
+        panel.begin { [weak self] resp in
+            guard resp == .OK, let url = panel.url else { return }
+            do {
+                try Fingerprints.save(fingerprint, to: url)
+                self?.flash("已导出到 \(url.lastPathComponent)")
+            } catch {
+                self?.flash("导出失败：\(error.localizedDescription)")
+            }
+        }
+    }
+
+    func compare(with url: URL) {
+        do {
+            let fp = try Fingerprints.load(url)
+            withAnimation(.snappy) { baseline = Baseline(name: url.lastPathComponent, fp: fp) }
+        } catch {
+            flash(error.localizedDescription)
+        }
+    }
+
+    func pickSnapshotToCompare() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.json]
+        panel.directoryURL = Fingerprints.snapshotDir
+        panel.begin { [weak self] resp in
+            guard resp == .OK, let url = panel.url else { return }
+            self?.compare(with: url)
+        }
+    }
+
+    func clearBaseline() {
+        withAnimation(.snappy) { baseline = nil }
+    }
+
+    func copyValue(_ item: FingerprintItem) {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(item.value ?? "", forType: .string)
+        flash("已复制\(item.label)")
+    }
+
+    func askRegenerate() {
+        Task {
+            let running = await Task.detached { Fingerprints.runningClaudeCode() }.value
+            regenerateConfirm = running
+        }
+    }
+
+    /// 重新生成前自动存一份快照并设为对比基准，做完直接能看到哪些值变了。
+    func regenerateIds() {
+        let version = Self.appVersion
+        fingerprintBusy = true
+        Task {
+            let outcome = await Task.detached(priority: .userInitiated) { () -> Result<(URL, [RegenerateResult]), Error> in
+                do {
+                    let before = Fingerprints.collect(version: version)
+                    let snap = try Fingerprints.save(before)
+                    return .success((snap, try Fingerprints.regenerateIds()))
+                } catch {
+                    return .failure(error)
+                }
+            }.value
+            fingerprintBusy = false
+            switch outcome {
+            case .success(let (snap, results)):
+                compare(with: snap)
+                let n = results.reduce(0) { $0 + $1.changes.count }
+                flash(n > 0 ? "已重新生成 \(n) 个 ID，旧文件备份在 ~/.ccenv/backups" : "没有可重新生成的 ID")
+            case .failure(let error):
+                flash("重新生成失败：\(error.localizedDescription)")
+            }
+            refreshFingerprint()
         }
     }
 
