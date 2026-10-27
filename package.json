@@ -1,7 +1,7 @@
 {
   "name": "ccenv",
   "private": true,
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "Environment consistency checker for network exit / timezone / locale / fonts / DNS. Local-first, zero dependencies. Ships a CLI and a native macOS app.",
   "type": "module",
   "license": "MIT",
