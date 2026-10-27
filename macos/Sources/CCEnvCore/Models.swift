@@ -3,7 +3,7 @@
 import Foundation
 
 public let schemaVersion = 2
-public let coreVersion = "0.3.0"
+public let coreVersion = "0.4.0"
 
 public enum Level: String, Codable, CaseIterable, Comparable, Sendable {
     case high, medium, low, info, ok
