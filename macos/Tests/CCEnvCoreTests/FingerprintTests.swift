@@ -92,4 +92,46 @@ final class FingerprintTests: XCTestCase {
         XCTAssertEqual(r.version, "0.4.0")
         XCTAssertEqual(r.macZip?.name, "ccenv-0.4.0-macos.zip")
     }
+
+    func testRegenerateDesktopIds() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("ccenv-desk-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let oldUuid = "6fc0f7aa-1111-4222-8333-444455556666"
+        let newUuid = "0a0b0c0d-1111-4222-8333-444455556666"
+        let did = dir.appendingPathComponent("ant-did")
+        let ids = dir.appendingPathComponent("ccd-ids.json")
+        try Data(Data(oldUuid.utf8).base64EncodedString().utf8).write(to: did)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: did.path)
+        try Data(#"{"salt":"old-salt","other":1}"#.utf8).write(to: ids)
+
+        let results = try Fingerprints.regenerateDesktopIds(dir: dir.path, backupTo: dir.appendingPathComponent("bak"), generate: { newUuid })
+        XCTAssertEqual(results.count, 2)
+        XCTAssertEqual(Fingerprints.decodeAntDid(try String(contentsOf: did, encoding: .utf8)), newUuid)
+        XCTAssertEqual((try FileManager.default.attributesOfItem(atPath: did.path)[.posixPermissions] as! NSNumber).intValue, 0o600)
+        // 和 Node 版 JSON.stringify({...cfg, salt}) 的输出逐字节一致
+        XCTAssertEqual(try String(contentsOf: ids, encoding: .utf8), #"{"salt":"\#(newUuid)","other":1}"#)
+        XCTAssertEqual(Fingerprints.decodeAntDid(try String(contentsOfFile: results[0].backup!, encoding: .utf8)), oldUuid)
+    }
+
+    func testRegenerateDesktopIdsLeavesGarbageAlone() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("ccenv-desk-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try Data("garbage".utf8).write(to: dir.appendingPathComponent("ant-did"))
+        XCTAssertTrue(try Fingerprints.regenerateDesktopIds(dir: dir.path, backupTo: dir.appendingPathComponent("bak")).isEmpty)
+        XCTAssertNil(Fingerprints.decodeAntDid(nil))
+    }
+
+    func testDesktopProcessMatching() {
+        XCTAssertTrue(Fingerprints.isClaudeDesktopProcess("/Applications/Claude.app/Contents/MacOS/Claude"))
+        XCTAssertFalse(Fingerprints.isClaudeDesktopProcess("/Applications/Claude.app/Contents/Frameworks/Claude Helper.app/Contents/MacOS/Claude Helper"))
+        XCTAssertFalse(Fingerprints.isClaudeDesktopProcess("/Applications/Claude.app/Contents/Helpers/chrome-native-host"))
+    }
+
+    func testReplaceValueOnlyTouchesThatKey() {
+        let text = #"{"a":"x","salt":"x"}"#
+        XCTAssertEqual(Fingerprints.replaceValue(in: text, key: "salt", old: "x", with: "y"), #"{"a":"x","salt":"y"}"#)
+        XCTAssertNil(Fingerprints.replaceValue(in: text, key: "salt", old: "z", with: "y"))
+    }
 }

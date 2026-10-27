@@ -45,8 +45,15 @@ final class AppModel {
     var reveal = false
     var fingerprintBusy = false
     var recentSnapshots: [URL] = []
-    /// 非空时弹出「重新生成」确认框，值是当前运行中的 Claude Code 进程数。
-    var regenerateConfirm: Int?
+    /// 点「重新生成」时的现场情况，非空时弹出确认框。
+    struct RegenerateContext {
+        var codeRunning: Int
+        var hasCode: Bool
+        var hasDesktop: Bool
+        var desktopRunning: Bool
+    }
+
+    var regenerateConfirm: RegenerateContext?
 
     @ObservationIgnored private var task: Task<Void, Never>?
     @ObservationIgnored private var toastTask: Task<Void, Never>?
@@ -271,32 +278,69 @@ final class AppModel {
     }
 
     func askRegenerate() {
+        let items = fingerprint?.items ?? []
+        let hasDesktop = items.contains { $0.resettable && $0.group == Fingerprints.desktopGroup }
+        let hasCode = items.contains { $0.resettable && $0.group != Fingerprints.desktopGroup }
+        let desktopRunning = !NSRunningApplication.runningApplications(withBundleIdentifier: Fingerprints.desktopBundleID).isEmpty
         Task {
             let running = await Task.detached { Fingerprints.runningClaudeCode() }.value
-            regenerateConfirm = running
+            regenerateConfirm = RegenerateContext(codeRunning: running, hasCode: hasCode, hasDesktop: hasDesktop, desktopRunning: desktopRunning)
         }
     }
 
+    /// 正常退出桌面版（相当于 ⌘Q），最多等 15 秒。返回退出前的 bundle 位置，用于之后重新打开；没退出返回 nil。
+    private func quitDesktop() async -> URL? {
+        let apps = NSRunningApplication.runningApplications(withBundleIdentifier: Fingerprints.desktopBundleID)
+        guard let url = apps.first?.bundleURL else { return nil }
+        apps.forEach { $0.terminate() }
+        for _ in 0..<75 {
+            if apps.allSatisfy(\.isTerminated) { return url }
+            try? await Task.sleep(nanoseconds: 200_000_000)
+        }
+        return nil
+    }
+
     /// 重新生成前自动存一份快照并设为对比基准，做完直接能看到哪些值变了。
-    func regenerateIds() {
+    /// includeDesktop：连同桌面版的 ant-did / salt；quitDesktop：桌面版在运行时先退出，改完再打开。
+    func regenerateIds(includeDesktop: Bool, quitDesktop shouldQuit: Bool = false) {
         let version = Self.appVersion
         fingerprintBusy = true
         Task {
+            var desktop = includeDesktop
+            var relaunch: URL?
+            var note = ""
+            if desktop && shouldQuit {
+                relaunch = await quitDesktop()
+                if relaunch == nil {
+                    desktop = false
+                    note = "；桌面版没有退出，跳过了它的 ID"
+                }
+            }
+            if desktop && !NSRunningApplication.runningApplications(withBundleIdentifier: Fingerprints.desktopBundleID).isEmpty {
+                desktop = false
+                note = "；桌面版仍在运行，跳过了它的 ID"
+            }
+            let doDesktop = desktop
             let outcome = await Task.detached(priority: .userInitiated) { () -> Result<(URL, [RegenerateResult]), Error> in
                 do {
                     let before = Fingerprints.collect(version: version)
                     let snap = try Fingerprints.save(before)
-                    return .success((snap, try Fingerprints.regenerateIds()))
+                    var results = try Fingerprints.regenerateIds()
+                    if doDesktop { results += try Fingerprints.regenerateDesktopIds() }
+                    return .success((snap, results))
                 } catch {
                     return .failure(error)
                 }
             }.value
+            if let relaunch {
+                NSWorkspace.shared.openApplication(at: relaunch, configuration: NSWorkspace.OpenConfiguration()) { _, _ in }
+            }
             fingerprintBusy = false
             switch outcome {
             case .success(let (snap, results)):
                 compare(with: snap)
                 let n = results.reduce(0) { $0 + $1.changes.count }
-                flash(n > 0 ? "已重新生成 \(n) 个 ID，旧文件备份在 ~/.ccenv/backups" : "没有可重新生成的 ID")
+                flash(n > 0 ? "已重新生成 \(n) 个 ID，旧文件备份在 ~/.ccenv/backups\(note)" : "没有可重新生成的 ID\(note)")
             case .failure(let error):
                 flash("重新生成失败：\(error.localizedDescription)")
             }

@@ -14,7 +14,7 @@ import { createInterface } from "node:readline/promises";
 import { check, readVersion, renderReport, renderJson } from "../src/index.js";
 import { HELP, parseArgs } from "../src/cli.js";
 import { renderFingerprint, renderRegenerate } from "../src/report.js";
-import { collectFingerprint, diffFingerprints, loadSnapshot, regenerateIds, runningClaudeCode, saveSnapshot, tildify } from "../src/fingerprint.js";
+import { collectFingerprint, diffFingerprints, loadSnapshot, regenerateDesktopIds, regenerateIds, runningClaudeCode, runningClaudeDesktop, saveSnapshot, tildify } from "../src/fingerprint.js";
 
 const VERSION = readVersion();
 
@@ -77,21 +77,24 @@ async function fingerprint(opts) {
   if (opts.reset) {
     const before = collectFingerprint({ version: VERSION });
     if (!before.items.some((i) => i.resettable)) {
-      console.error("ccenv: 没找到 Claude Code 生成的随机 ID，无需重新生成。");
+      console.error("ccenv: 没找到可重新生成的随机 ID。");
       process.exit(1);
     }
     const running = runningClaudeCode();
+    const hasDesktop = before.items.some((i) => i.resettable && i.group === "Claude 桌面版");
+    const desktopRunning = hasDesktop && runningClaudeDesktop() > 0;
     if (!opts.yes) {
+      const scope = hasDesktop && !desktopRunning ? "Claude Code 的 userID / machineID 和桌面版的 ant-did / salt" : "Claude Code 的 userID / machineID";
       const warn = running ? `（有 ${running} 个 Claude Code 进程在运行，建议先退出）` : "";
-      const ok = await confirm(`将重新生成 Claude Code 的 userID / machineID，原文件会先备份${warn}。继续？[y/N] `);
+      const ok = await confirm(`将重新生成 ${scope}，原文件会先备份${warn}。继续？[y/N] `);
       if (!ok) {
         console.error("已取消。非交互环境请加 --yes。");
         process.exit(1);
       }
     }
     const snap = saveSnapshot(before);
-    const results = regenerateIds();
-    console.log(renderRegenerate(results.map((r) => ({ ...r, file: tildify(r.file), backup: r.backup && tildify(r.backup) })), { reveal: opts.reveal, running }));
+    const results = [...regenerateIds(), ...(hasDesktop && !desktopRunning ? regenerateDesktopIds() : [])];
+    console.log(renderRegenerate(results.map((r) => ({ ...r, file: tildify(r.file), backup: r.backup && tildify(r.backup) })), { reveal: opts.reveal, running, desktopRunning }));
     const after = collectFingerprint({ version: VERSION });
     console.log(renderFingerprint(after, { reveal: opts.reveal, diff: diffFingerprints(before, after), baseline: `${tildify(snap)}（重新生成前自动保存）` }));
     return;

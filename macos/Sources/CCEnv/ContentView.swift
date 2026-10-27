@@ -27,6 +27,7 @@ struct ContentView: View {
             }
         }
         .toolbar { toolbar }
+        .background { ToolbarTooltipInstaller().frame(width: 0, height: 0).id(model.tab) }
         .sheet(item: Binding(get: { model.shareImage }, set: { model.shareImage = $0 })) { img in
             SharePreviewSheet(share: img).environment(model)
         }
@@ -60,7 +61,7 @@ struct ContentView: View {
             }
             .pickerStyle(.segmented)
             .labelsHidden()
-            .help("⌘1 环境检测 · ⌘2 Claude 指纹")
+            .help("切换页面：环境检测 (⌘1) · Claude 指纹 (⌘2)")
         }
         if model.tab == .check {
             checkToolbar
@@ -79,7 +80,6 @@ struct ContentView: View {
                 Label("重新检测", systemImage: "arrow.clockwise")
             }
             .labelStyle(.titleAndIcon)
-            .help("重新检测 (⌘R)")
             .disabled(model.isRunning)
 
             Menu {
@@ -93,7 +93,7 @@ struct ContentView: View {
             } label: {
                 Label("分享", systemImage: "square.and.arrow.up")
             }
-            .help("复制或导出报告")
+            .help("分享：生成结论图片、复制文本报告或 JSON、导出 JSON 文件")
             .disabled(model.report == nil)
         }
     }
@@ -122,7 +122,7 @@ struct ContentView: View {
             } label: {
                 Label("选项", systemImage: "slider.horizontal.3")
             }
-            .help("检测与更新选项")
+            .help("选项：离线模式、采样次数、超时，以及自动更新")
     }
 
     private func footer(_ report: Report) -> some View {
@@ -432,6 +432,7 @@ struct RuleRow: View {
             Button(action: toggle) {
                 HStack(alignment: .top, spacing: 12) {
                     LevelBadge(level: rule.level)
+                        .help("冲突等级：\(rule.level.chinese)")
                         .padding(.top, 1)
                     VStack(alignment: .leading, spacing: 4) {
                         HStack(alignment: .firstTextBaseline, spacing: 8) {

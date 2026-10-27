@@ -38,22 +38,36 @@ struct FingerprintView: View {
         .background(Color(nsColor: .windowBackgroundColor))
         .task { if model.fingerprint == nil { model.refreshFingerprint() } }
         .confirmationDialog(
-            "重新生成 Claude Code 的随机 ID？",
+            "重新生成随机 ID？",
             isPresented: Binding(get: { model.regenerateConfirm != nil }, set: { if !$0 { model.regenerateConfirm = nil } }),
-            titleVisibility: .visible
-        ) {
-            Button("重新生成", role: .destructive) { model.regenerateIds() }
+            titleVisibility: .visible,
+            presenting: model.regenerateConfirm
+        ) { ctx in
+            if ctx.hasDesktop && ctx.desktopRunning {
+                Button("退出桌面版并全部重新生成", role: .destructive) { model.regenerateIds(includeDesktop: true, quitDesktop: true) }
+                if ctx.hasCode {
+                    Button("只重新生成 Claude Code 的 ID") { model.regenerateIds(includeDesktop: false) }
+                }
+            } else {
+                Button("重新生成", role: .destructive) { model.regenerateIds(includeDesktop: ctx.hasDesktop) }
+            }
             Button("取消", role: .cancel) {}
-        } message: {
-            Text(regenerateMessage)
+        } message: { ctx in
+            Text(regenerateMessage(ctx))
         }
     }
 
-    private var regenerateMessage: String {
-        var lines = ["会把 userID / machineID 换成新的随机值，和 Claude Code 首次运行时生成的格式一样。改之前会自动存一份快照并备份原文件到 ~/.ccenv/backups，改完直接显示前后对比。",
-                     "账号 UUID、邮箱、硬件 UUID 不会变。"]
-        if let n = model.regenerateConfirm, n > 0 {
-            lines.append("现在有 \(n) 个 Claude Code 进程在运行，它们内存里还是旧 ID，建议先退出，改完再重启。")
+    private func regenerateMessage(_ ctx: AppModel.RegenerateContext) -> String {
+        var scope: [String] = []
+        if ctx.hasCode { scope.append("Claude Code 的 userID / machineID") }
+        if ctx.hasDesktop { scope.append("桌面版的设备 ID（ant-did）和 ID 盐") }
+        var lines = ["会把\(scope.joined(separator: "、"))换成新的随机值，格式和首次运行时生成的一样。改之前自动存一份快照，原文件备份到 ~/.ccenv/backups，改完直接显示前后对比。",
+                     "账号 UUID、邮箱、设备登记、硬件 UUID 不会变。"]
+        if ctx.hasDesktop && ctx.desktopRunning {
+            lines.append("桌面版正在运行。它只在启动时读这两个 ID，要一起重新生成得先退出它（桌面版里进行中的对话和任务会中断），改完会自动重新打开。")
+        }
+        if ctx.codeRunning > 0 {
+            lines.append("现在有 \(ctx.codeRunning) 个 Claude Code 进程在运行，它们内存里还是旧 ID，重启后才会用新的。")
         }
         return lines.joined(separator: "\n\n")
     }
@@ -118,6 +132,7 @@ struct FingerprintView: View {
             Spacer()
             Button("结束对比") { model.clearBaseline() }
                 .controlSize(.small)
+                .help("不再和快照对比，只显示当前值")
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 12)
@@ -194,7 +209,7 @@ struct FingerprintRow: View {
                         .strikethrough(status == .removed)
                         .textSelection(.enabled)
                         .lineLimit(model.reveal ? nil : 1)
-                    if item.resettable { Pill(text: "可重新生成", color: .accentColor) }
+                    if item.resettable { Pill(text: "可重新生成", color: .accentColor).help("首次运行时随机生成，点工具栏「重新生成 ID」可换成新值") }
                 }
                 if status == .changed {
                     Text("之前 " + Fingerprints.mask(before, masked: item.masked && !model.reveal, sensitive: item.sensitive && !model.reveal))
@@ -213,6 +228,7 @@ struct FingerprintRow: View {
             Spacer(minLength: 8)
             if let status, status != .same {
                 Pill(text: status.text, color: status.color)
+                    .help(status.hint)
             }
             if status != .removed {
                 Button {
@@ -222,7 +238,7 @@ struct FingerprintRow: View {
                 }
                 .buttonStyle(.borderless)
                 .foregroundStyle(.secondary)
-                .help("复制完整值")
+                .help("复制「\(item.label)」的完整值")
             }
         }
         .font(.callout)
@@ -230,6 +246,15 @@ struct FingerprintRow: View {
 }
 
 extension DiffStatus {
+    var hint: String {
+        switch self {
+        case .same: return "和对比快照相同"
+        case .changed: return "和对比快照相比，值变了；下面一行是旧值"
+        case .added: return "对比快照里没有这一项"
+        case .removed: return "对比快照里有，现在读不到了"
+        }
+    }
+
     var text: String {
         switch self {
         case .same: return "未变"
@@ -270,13 +295,12 @@ struct FingerprintToolbar: ToolbarContent {
                 Label("刷新", systemImage: "arrow.clockwise")
             }
             .labelStyle(.titleAndIcon)
-            .help("重新读取")
             .disabled(model.fingerprintBusy)
 
             Toggle(isOn: Binding(get: { model.reveal }, set: { model.reveal = $0 })) {
                 Label(model.reveal ? "隐藏完整值" : "显示完整值", systemImage: model.reveal ? "eye.slash" : "eye")
             }
-            .help("默认打码，只显示头尾几位")
+            .help(model.reveal ? "隐藏完整值，标识只显示头尾几位" : "显示完整值（默认打码，只显示头尾几位）")
 
             Menu {
                 Button("存为快照", systemImage: "camera") { model.saveSnapshot() }
@@ -298,7 +322,7 @@ struct FingerprintToolbar: ToolbarContent {
             } label: {
                 Label("快照", systemImage: "camera")
             }
-            .help("存快照 / 导出 / 对比")
+            .help("快照：存为快照、导出到文件、和以前的快照对比")
             .disabled(model.fingerprint == nil)
 
             Button {
@@ -306,7 +330,6 @@ struct FingerprintToolbar: ToolbarContent {
             } label: {
                 Label("重新生成 ID", systemImage: "arrow.triangle.2.circlepath")
             }
-            .help("重新生成 Claude Code 的 userID / machineID")
             .disabled(model.fingerprintBusy || !(model.fingerprint?.hasResettable ?? false))
         }
     }
@@ -343,7 +366,7 @@ struct UpdateBanner: View {
                         NSWorkspace.shared.open(URL(string: "https://github.com/\(UpdateCheck.repo)/releases/latest")!)
                     }
                     .controlSize(.small)
-                    Button { u.dismissFailure() } label: { Image(systemName: "xmark") }
+                    Button { u.dismissFailure() } label: { Image(systemName: "xmark").help("关闭提示") }
                         .buttonStyle(.borderless)
                 }
             default:

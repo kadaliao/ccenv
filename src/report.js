@@ -266,12 +266,12 @@ export function renderFingerprint(fp, { reveal = false, diff = null, baseline = 
   return out.join("\n");
 }
 
-export function renderRegenerate(results, { reveal = false, running = 0 } = {}) {
+export function renderRegenerate(results, { reveal = false, running = 0, desktopRunning = false } = {}) {
   const show = (v) => (reveal ? v : maskValue(v));
   const out = [""];
   const changed = results.filter((r) => r.changes.length);
   if (!changed.length) {
-    out.push(yellow("没有可重新生成的 ID（配置文件里没有 userID / machineID）。"));
+    out.push(yellow(desktopRunning ? "没有可重新生成的 ID：Claude Code 配置里没有，桌面版正在运行已跳过。" : "没有可重新生成的 ID。"));
     return out.join("\n");
   }
   for (const r of changed) {
@@ -281,7 +281,8 @@ export function renderRegenerate(results, { reveal = false, running = 0 } = {}) 
   }
   out.push("");
   if (running > 0) out.push(yellow(`有 ${running} 个 Claude Code 进程在运行，它们在内存里还拿着旧 ID，重启后才会用新的。`));
-  out.push(dim("账号 UUID、邮箱属于服务端身份，不受影响；要恢复旧 ID，把备份文件拷回原处即可。"));
+  if (desktopRunning) out.push(yellow("Claude 桌面版正在运行，这次跳过了它的 ant-did / salt；退出桌面版后再跑一次 --reset 即可。"));
+  out.push(dim("账号 UUID、邮箱、设备登记、硬件 UUID 不受影响；要恢复旧 ID，把备份文件拷回原处即可。"));
   out.push("");
   return out.join("\n");
 }

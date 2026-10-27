@@ -5,11 +5,13 @@
 //   ~/Library/Application Support/Claude/{ant-did,ccd-ids.json,ant-device-registry.json,config.json}  桌面版
 //   ioreg IOPlatformUUID                                                                Claude Code 的 OTel host.id
 //
-// 「重新生成」只改 Claude Code 首次运行时随机生成的 userID / machineID / summonSidKey，
-// 写之前先备份，写法和 Claude Code 自己的配置锁兼容（mkdir <file>.lock）。
+// 「重新生成」只改首次运行时随机生成、缺失时会自动重建的标识，写之前先备份：
+//   Claude Code 的 userID / machineID / summonSidKey（持有和 Claude Code 相同的配置锁 <file>.lock）
+//   桌面版的 ant-did（base64 编码的随机 UUID）和 ccd-ids.json 的 salt（随机 UUID），只在桌面版退出时改
+// 设备登记（ant-device-registry.json）背后是钥匙串 / Secure Enclave 里的硬件密钥，属于安全凭据，不碰。
 
 import { execFileSync } from "node:child_process";
-import { randomBytes } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmdirSync, statSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -19,10 +21,19 @@ export const FINGERPRINT_SCHEMA = 1;
 /** Claude Code 自己生成的随机标识：64 位十六进制。 */
 export const RESETTABLE_KEYS = ["userID", "machineID", "summonSidKey"];
 const HEX64 = /^[0-9a-f]{64}$/;
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** ant-did 文件内容是 base64 编码的 UUID，解不出 UUID 返回 null。 */
+export function decodeAntDid(raw) {
+  if (typeof raw !== "string") return null;
+  const s = Buffer.from(raw.trim(), "base64").toString("utf8").trim();
+  return UUID_RE.test(s) ? s : null;
+}
 
 const home = () => os.homedir();
 export const snapshotDir = () => path.join(home(), ".ccenv", "fingerprints");
 const backupDir = () => path.join(home(), ".ccenv", "backups");
+export const desktopDir = () => path.join(home(), "Library", "Application Support", "Claude");
 
 /** 把绝对路径里的家目录换成 ~，用于展示和条目 ID。 */
 export function tildify(p) {
@@ -98,15 +109,15 @@ export function claudeCodeItems(config, file) {
 }
 
 function desktopItems() {
-  const dir = path.join(home(), "Library", "Application Support", "Claude");
+  const dir = desktopDir();
   if (!existsSync(dir)) return [];
   const group = "Claude 桌面版";
   const src = (f) => tildify(path.join(dir, f));
   const out = [];
   const did = readText(path.join(dir, "ant-did"));
-  if (did) out.push(item({ id: `${src("ant-did")}`, group, label: "设备 ID (ant-did)", value: did, source: src("ant-did"), masked: true }));
+  if (did) out.push(item({ id: `${src("ant-did")}`, group, label: "设备 ID (ant-did)", value: did, source: src("ant-did"), note: "桌面版首次启动时随机生成的 UUID（base64 存储）", resettable: decodeAntDid(did) != null, masked: true }));
   const salt = readJson(path.join(dir, "ccd-ids.json"))?.salt;
-  if (typeof salt === "string") out.push(item({ id: `${src("ccd-ids.json")}#salt`, group, label: "ID 盐 (ccd-ids)", value: salt, source: src("ccd-ids.json"), masked: true }));
+  if (typeof salt === "string") out.push(item({ id: `${src("ccd-ids.json")}#salt`, group, label: "ID 盐 (ccd-ids)", value: salt, source: src("ccd-ids.json"), note: "桌面版随机生成，用来给本地路径做哈希", resettable: salt.length > 0, masked: true }));
   const registry = readJson(path.join(dir, "ant-device-registry.json"));
   if (registry && typeof registry === "object") {
     // 值是设备登记凭据，只列出登记过的账号，不读值。
@@ -156,6 +167,17 @@ export function isClaudeCodeProcess(args) {
   return /\/claude\/versions\/[^/\s]+(\s|$)/.test(args)
     || /@anthropic-ai\/claude-code\//.test(args)
     || /(^|\/)claude(\s|$)/.test(args);
+}
+
+/** 正在运行的 Claude 桌面版主进程数（不含 Helper）。 */
+export function runningClaudeDesktop() {
+  const out = run("/bin/ps", ["-axo", "pid=,args="]);
+  if (!out) return 0;
+  return out.split("\n").filter((line) => isClaudeDesktopProcess(line.trim().replace(/^\d+\s+/, ""))).length;
+}
+
+export function isClaudeDesktopProcess(args) {
+  return /\/Claude\.app\/Contents\/MacOS\/Claude(\s|$)/.test(args);
 }
 
 export function collectFingerprint({ version = "0.0.0" } = {}) {
@@ -287,6 +309,48 @@ function withConfigLock(file, fn) {
   }
 }
 
+function backupFile(file, backupTo) {
+  mkdirSync(backupTo, { recursive: true });
+  const backup = path.join(backupTo, `${tildify(file).replace(/^~\//, "").replace(/\//g, "_")}-${stamp()}`);
+  copyFileSync(file, backup);
+  chmodSync(backup, 0o600);
+  return backup;
+}
+
+function atomicWrite(file, text) {
+  const mode = statSync(file).mode & 0o777;
+  const tmp = `${file}.ccenv-${process.pid}.tmp`;
+  writeFileSync(tmp, text, { mode });
+  renameSync(tmp, file);
+}
+
+/**
+ * 重新生成桌面版的 ant-did 和 ccd-ids.json 的 salt。桌面版只在启动时读它们，
+ * 运行中改了会被忽略甚至被写回，所以调用方要先确认桌面版已退出。
+ */
+export function regenerateDesktopIds({ dir = desktopDir(), backupTo = backupDir(), gen = randomUUID } = {}) {
+  const results = [];
+  const did = path.join(dir, "ant-did");
+  if (existsSync(did)) {
+    const raw = readFileSync(did, "utf8");
+    if (decodeAntDid(raw) != null) {
+      const backup = backupFile(did, backupTo);
+      const next = Buffer.from(gen(), "utf8").toString("base64");
+      atomicWrite(did, next);
+      results.push({ file: did, changes: [{ key: "ant-did", before: raw.trim(), after: next }], backup });
+    }
+  }
+  const ids = path.join(dir, "ccd-ids.json");
+  const cfg = existsSync(ids) ? readJson(ids) : null;
+  if (cfg && typeof cfg === "object" && typeof cfg.salt === "string") {
+    const backup = backupFile(ids, backupTo);
+    const next = gen();
+    atomicWrite(ids, JSON.stringify({ ...cfg, salt: next })); // 和桌面版自己的写法一致
+    results.push({ file: ids, changes: [{ key: "salt", before: cfg.salt, after: next }], backup });
+  }
+  return results;
+}
+
 /** 重新生成所有 Claude Code 配置里的随机标识。每个文件先备份到 ~/.ccenv/backups。 */
 export function regenerateIds({ files = claudeCodeConfigPaths(), keys = RESETTABLE_KEYS, backupTo = backupDir() } = {}) {
   const results = [];
@@ -295,14 +359,8 @@ export function regenerateIds({ files = claudeCodeConfigPaths(), keys = RESETTAB
       const text = readFileSync(file, "utf8");
       const { text: next, changes } = regenerateInText(text, keys);
       if (!changes.length) return { file, changes, backup: null };
-      mkdirSync(backupTo, { recursive: true });
-      const backup = path.join(backupTo, `${tildify(file).replace(/^~\//, "").replace(/\//g, "_")}-${stamp()}`);
-      copyFileSync(file, backup);
-      chmodSync(backup, 0o600);
-      const mode = statSync(file).mode & 0o777;
-      const tmp = `${file}.ccenv-${process.pid}.tmp`;
-      writeFileSync(tmp, next, { mode });
-      renameSync(tmp, file);
+      const backup = backupFile(file, backupTo);
+      atomicWrite(file, next);
       return { file, changes, backup };
     });
     results.push(res);

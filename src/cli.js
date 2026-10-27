@@ -11,7 +11,7 @@ export const HELP = `ccenv — 环境一致性检测（一致性冲突 + 真实 
       --json                   输出结构化 JSON
       --save [文件]            保存快照，默认存到 ~/.ccenv/fingerprints/
       --diff <文件|latest>     和一份快照逐项对比
-      --reset                  重新生成 Claude Code 的随机 ID（userID / machineID），先自动存快照和备份
+      --reset                  重新生成随机 ID：Claude Code 的 userID / machineID，桌面版退出时连同它的 ant-did / salt；先自动存快照和备份
       --yes                    --reset 时跳过确认
 
 检测选项:

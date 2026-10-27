@@ -2,7 +2,9 @@
 // 条目 ID、文案、快照格式和 CLI 相同，两边存的快照可以互相对比（默认都放在 ~/.ccenv/fingerprints）。
 //
 // 只读固定位置里的标识字段，不读令牌、会话和项目数据。
-// 「重新生成」只改 Claude Code 首次运行时随机生成的 userID / machineID / summonSidKey，写前先备份。
+// 「重新生成」只改首次运行时随机生成、缺失时会自动重建的标识，写前先备份：
+//   Claude Code 的 userID / machineID / summonSidKey；桌面版的 ant-did 和 ccd-ids.json 的 salt（只在桌面版退出时改）。
+// 设备登记（ant-device-registry.json）背后是钥匙串 / Secure Enclave 里的硬件密钥，属于安全凭据，不碰。
 
 import Foundation
 import Darwin
@@ -113,6 +115,17 @@ public enum Fingerprints {
     static var home: String { NSHomeDirectory() }
     public static var snapshotDir: URL { URL(fileURLWithPath: home).appendingPathComponent(".ccenv/fingerprints") }
     static var backupDir: URL { URL(fileURLWithPath: home).appendingPathComponent(".ccenv/backups") }
+    public static var desktopDir: String { (home as NSString).appendingPathComponent("Library/Application Support/Claude") }
+    public static let desktopBundleID = "com.anthropic.claudefordesktop"
+    public static let desktopGroup = "Claude 桌面版"
+
+    /// ant-did 文件内容是 base64 编码的 UUID，解不出 UUID 返回 nil。
+    public static func decodeAntDid(_ raw: String?) -> String? {
+        guard let raw, let data = Data(base64Encoded: raw.trimmingCharacters(in: .whitespacesAndNewlines)),
+              let s = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
+              UUID(uuidString: s) != nil else { return nil }
+        return s
+    }
 
     public static func tildify(_ p: String) -> String {
         let h = home
@@ -191,18 +204,22 @@ public enum Fingerprints {
     }
 
     static func desktopItems() -> [FingerprintItem] {
-        let dir = (home as NSString).appendingPathComponent("Library/Application Support/Claude")
+        let dir = desktopDir
         guard FileManager.default.fileExists(atPath: dir) else { return [] }
-        let group = "Claude 桌面版"
+        let group = desktopGroup
         func path(_ f: String) -> String { (dir as NSString).appendingPathComponent(f) }
         func src(_ f: String) -> String { tildify(path(f)) }
         var out: [FingerprintItem] = []
         if let raw = try? String(contentsOfFile: path("ant-did"), encoding: .utf8) {
             let did = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !did.isEmpty { out.append(.init(id: src("ant-did"), group: group, label: "设备 ID (ant-did)", value: did, source: src("ant-did"), masked: true)) }
+            if !did.isEmpty {
+                out.append(.init(id: src("ant-did"), group: group, label: "设备 ID (ant-did)", value: did, source: src("ant-did"),
+                                 note: "桌面版首次启动时随机生成的 UUID（base64 存储）", resettable: decodeAntDid(did) != nil, masked: true))
+            }
         }
         if let salt = (readJSON(path("ccd-ids.json")) as? [String: Any])?["salt"] as? String {
-            out.append(.init(id: "\(src("ccd-ids.json"))#salt", group: group, label: "ID 盐 (ccd-ids)", value: salt, source: src("ccd-ids.json"), masked: true))
+            out.append(.init(id: "\(src("ccd-ids.json"))#salt", group: group, label: "ID 盐 (ccd-ids)", value: salt, source: src("ccd-ids.json"),
+                             note: "桌面版随机生成，用来给本地路径做哈希", resettable: !salt.isEmpty, masked: true))
         }
         if let registry = readJSON(path("ant-device-registry.json")) as? [String: Any] {
             // 值是设备登记凭据，只列出登记过的账号，不读值。
@@ -257,6 +274,10 @@ public enum Fingerprints {
         Rx.test(#"/claude/versions/[^/\s]+(\s|$)"#, args, caseInsensitive: false)
             || Rx.test(#"@anthropic-ai/claude-code/"#, args, caseInsensitive: false)
             || Rx.test(#"(^|/)claude(\s|$)"#, args, caseInsensitive: false)
+    }
+
+    public static func isClaudeDesktopProcess(_ args: String) -> Bool {
+        Rx.test(#"/Claude\.app/Contents/MacOS/Claude(\s|$)"#, args, caseInsensitive: false)
     }
 
     /// 正在运行的 Claude Code 进程数。它们把标识缓存在内存里，重新生成后要重启才会用新值。
@@ -341,23 +362,55 @@ public enum Fingerprints {
         for key in keys {
             guard let old = obj[key] as? String, isHex64(old) else { continue }
             let next = generate()
-            let pattern = "\"\(NSRegularExpression.escapedPattern(for: key))\"\\s*:\\s*\"\(old)\""
-            guard let re = try? NSRegularExpression(pattern: pattern) else { continue }
-            let ns = out as NSString
-            let matches = re.matches(in: out, range: NSRange(location: 0, length: ns.length))
-            if matches.isEmpty { continue }
-            // 从后往前替换每处匹配里的旧值，前面的偏移量不受影响。
-            let mutable = NSMutableString(string: out)
-            for m in matches.reversed() {
-                let inner = ns.range(of: old, options: [], range: m.range)
-                mutable.replaceCharacters(in: inner, with: next)
-            }
-            out = mutable as String
+            guard let replaced = replaceValue(in: out, key: key, old: old, with: next) else { continue }
+            out = replaced
             changes.append(.init(key: key, before: old, after: next))
         }
         // 防御：写回去之前确认仍是合法 JSON
         guard (try? JSONSerialization.jsonObject(with: Data(out.utf8))) != nil else { throw FingerprintError.invalidJSON("配置") }
         return (out, changes)
+    }
+
+    /// 把原文里 "key": "<old>" 的值换成 next，其它字节不变；没匹配到返回 nil。
+    static func replaceValue(in text: String, key: String, old: String, with next: String) -> String? {
+        let pattern = "\"\(NSRegularExpression.escapedPattern(for: key))\"\\s*:\\s*\"\(NSRegularExpression.escapedPattern(for: old))\""
+        guard let re = try? NSRegularExpression(pattern: pattern) else { return nil }
+        let ns = text as NSString
+        let matches = re.matches(in: text, range: NSRange(location: 0, length: ns.length))
+        if matches.isEmpty { return nil }
+        // 从后往前替换每处匹配里的旧值，前面的偏移量不受影响。
+        let mutable = NSMutableString(string: text)
+        for m in matches.reversed() {
+            // 值在匹配的末尾：跳过末尾引号往前取 old 的长度
+            let inner = NSRange(location: m.range.location + m.range.length - 1 - (old as NSString).length, length: (old as NSString).length)
+            mutable.replaceCharacters(in: inner, with: next)
+        }
+        return mutable as String
+    }
+
+    static func backupFile(_ file: String, to dir: URL) throws -> String {
+        let fm = FileManager.default
+        try fm.createDirectory(at: dir, withIntermediateDirectories: true)
+        let name = tildify(file).replacingOccurrences(of: #"^~/"#, with: "", options: .regularExpression).replacingOccurrences(of: "/", with: "_")
+        let backup = dir.appendingPathComponent("\(name)-\(stamp())")
+        try? fm.removeItem(at: backup)
+        try fm.copyItem(atPath: file, toPath: backup.path)
+        try fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: backup.path)
+        return backup.path
+    }
+
+    /// 写临时文件再 rename，保留原文件权限。
+    static func atomicWrite(_ text: String, to file: String) throws {
+        let fm = FileManager.default
+        let mode = ((try? fm.attributesOfItem(atPath: file))?[.posixPermissions] as? NSNumber)?.intValue ?? 0o600
+        let tmp = file + ".ccenv-\(getpid()).tmp"
+        try Data(text.utf8).write(to: URL(fileURLWithPath: tmp))
+        try fm.setAttributes([.posixPermissions: mode], ofItemAtPath: tmp)
+        guard rename(tmp, file) == 0 else {
+            let err = POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+            try? fm.removeItem(atPath: tmp)
+            throw err
+        }
     }
 
     /// 和 Claude Code（proper-lockfile）同一把锁：<file>.lock 目录。超过 10 秒视为陈旧锁。
@@ -381,29 +434,41 @@ public enum Fingerprints {
     /// 重新生成所有 Claude Code 配置里的随机标识。每个文件先备份到 ~/.ccenv/backups。
     public static func regenerateIds(files: [String] = claudeCodeConfigPaths(), keys: [String] = resettableKeys, backupTo: URL? = nil) throws -> [RegenerateResult] {
         let backupDir = backupTo ?? self.backupDir
-        let fm = FileManager.default
         return try files.map { file in
             try withConfigLock(file) {
                 guard let text = try? String(contentsOfFile: file, encoding: .utf8) else { throw FingerprintError.invalidJSON(tildify(file)) }
                 let (next, changes) = try regenerate(in: text, keys: keys)
                 guard !changes.isEmpty else { return RegenerateResult(file: file, changes: [], backup: nil) }
-                try fm.createDirectory(at: backupDir, withIntermediateDirectories: true)
-                let name = tildify(file).replacingOccurrences(of: #"^~/"#, with: "", options: .regularExpression).replacingOccurrences(of: "/", with: "_")
-                let backup = backupDir.appendingPathComponent("\(name)-\(stamp())")
-                try? fm.removeItem(at: backup)
-                try fm.copyItem(atPath: file, toPath: backup.path)
-                try fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: backup.path)
-                let mode = ((try? fm.attributesOfItem(atPath: file))?[.posixPermissions] as? NSNumber)?.intValue ?? 0o600
-                let tmp = file + ".ccenv-\(getpid()).tmp"
-                try Data(next.utf8).write(to: URL(fileURLWithPath: tmp))
-                try fm.setAttributes([.posixPermissions: mode], ofItemAtPath: tmp)
-                guard rename(tmp, file) == 0 else {
-                    let err = POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
-                    try? fm.removeItem(atPath: tmp)
-                    throw err
-                }
-                return RegenerateResult(file: file, changes: changes, backup: backup.path)
+                let backup = try backupFile(file, to: backupDir)
+                try atomicWrite(next, to: file)
+                return RegenerateResult(file: file, changes: changes, backup: backup)
             }
         }
+    }
+
+    /// 重新生成桌面版的 ant-did 和 ccd-ids.json 的 salt。桌面版只在启动时读它们，
+    /// 运行中改了会被忽略甚至写回，调用方要先确认桌面版已退出。
+    public static func regenerateDesktopIds(dir: String = desktopDir, backupTo: URL? = nil, generate: () -> String = { UUID().uuidString.lowercased() }) throws -> [RegenerateResult] {
+        let backupDir = backupTo ?? self.backupDir
+        var results: [RegenerateResult] = []
+        let did = (dir as NSString).appendingPathComponent("ant-did")
+        if let raw = try? String(contentsOfFile: did, encoding: .utf8), decodeAntDid(raw) != nil {
+            let backup = try backupFile(did, to: backupDir)
+            let next = Data(generate().utf8).base64EncodedString()
+            try atomicWrite(next, to: did)
+            results.append(.init(file: did, changes: [.init(key: "ant-did", before: raw.trimmingCharacters(in: .whitespacesAndNewlines), after: next)], backup: backup))
+        }
+        let ids = (dir as NSString).appendingPathComponent("ccd-ids.json")
+        if let text = try? String(contentsOfFile: ids, encoding: .utf8),
+           let obj = (try? JSONSerialization.jsonObject(with: Data(text.utf8))) as? [String: Any],
+           let old = obj["salt"] as? String {
+            let next = generate()
+            if let replaced = replaceValue(in: text, key: "salt", old: old, with: next) {
+                let backup = try backupFile(ids, to: backupDir)
+                try atomicWrite(replaced, to: ids)
+                results.append(.init(file: ids, changes: [.init(key: "salt", before: old, after: next)], backup: backup))
+            }
+        }
+        return results
     }
 }

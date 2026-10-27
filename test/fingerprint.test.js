@@ -4,7 +4,7 @@ import { mkdtempSync, readFileSync, readdirSync, statSync, writeFileSync, exists
 import os from "node:os";
 import path from "node:path";
 
-import { claudeCodeItems, diffFingerprints, isClaudeCodeProcess, maskValue, regenerateIds, regenerateInText } from "../src/fingerprint.js";
+import { claudeCodeItems, decodeAntDid, diffFingerprints, isClaudeCodeProcess, isClaudeDesktopProcess, maskValue, regenerateDesktopIds, regenerateIds, regenerateInText } from "../src/fingerprint.js";
 import { parseArgs } from "../src/cli.js";
 
 const HEX = (c) => c.repeat(64);
@@ -84,4 +84,35 @@ test("parseArgs 支持子命令，子命令专属参数不能乱用", () => {
   assert.throws(() => parseArgs(["--reset"]), /只能用于/);
   assert.throws(() => parseArgs(["nope"]), /未知命令/);
   assert.throws(() => parseArgs(["fp", "--diff"]), /需要一个快照/);
+});
+
+test("regenerateDesktopIds 换掉 ant-did 和 salt，保留格式、权限和其它字段", () => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "ccenv-desk-"));
+  const oldUuid = "6fc0f7aa-1111-4222-8333-444455556666";
+  writeFileSync(path.join(dir, "ant-did"), Buffer.from(oldUuid).toString("base64"), { mode: 0o600 });
+  writeFileSync(path.join(dir, "ccd-ids.json"), JSON.stringify({ salt: "old-salt", other: 1 }), { mode: 0o600 });
+  const newUuid = "0a0b0c0d-1111-4222-8333-444455556666";
+  const results = regenerateDesktopIds({ dir, backupTo: path.join(dir, "bak"), gen: () => newUuid });
+  assert.equal(results.length, 2);
+  const did = readFileSync(path.join(dir, "ant-did"), "utf8");
+  assert.equal(decodeAntDid(did), newUuid);
+  assert.equal(statSync(path.join(dir, "ant-did")).mode & 0o777, 0o600);
+  assert.equal(readFileSync(path.join(dir, "ccd-ids.json"), "utf8"), JSON.stringify({ salt: newUuid, other: 1 }));
+  assert.equal(decodeAntDid(readFileSync(results[0].backup, "utf8")), oldUuid);
+  assert.equal(JSON.parse(readFileSync(results[1].backup, "utf8")).salt, "old-salt");
+});
+
+test("regenerateDesktopIds 不动解不出 UUID 的 ant-did，文件缺失时跳过", () => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "ccenv-desk-"));
+  writeFileSync(path.join(dir, "ant-did"), "garbage");
+  assert.deepEqual(regenerateDesktopIds({ dir, backupTo: path.join(dir, "bak") }), []);
+  assert.equal(readFileSync(path.join(dir, "ant-did"), "utf8"), "garbage");
+  assert.equal(decodeAntDid(null), null);
+});
+
+test("isClaudeDesktopProcess 只认主进程", () => {
+  assert.ok(isClaudeDesktopProcess("/Applications/Claude.app/Contents/MacOS/Claude"));
+  assert.ok(isClaudeDesktopProcess("/Applications/Claude.app/Contents/MacOS/Claude --flag"));
+  assert.ok(!isClaudeDesktopProcess("/Applications/Claude.app/Contents/Frameworks/Claude Helper.app/Contents/MacOS/Claude Helper"));
+  assert.ok(!isClaudeDesktopProcess("/Applications/Claude.app/Contents/Helpers/chrome-native-host"));
 });
